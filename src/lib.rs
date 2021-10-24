@@ -187,3 +187,54 @@ impl QuicSocket {
         })
     }
 }
+
+impl QuicListener {
+    /// Uses the underlying quiche Connection [send](https://docs.rs/quiche/0.10.0/quiche/struct.Connection.html#method.send)
+    /// method in order to write a singular QUIC packet to send to the peer.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// loop {
+    ///     let {write, info} = match listener.send(&mut out) {
+    ///         Ok(v) => v,
+    ///         Err(quiche::Error::done) => {
+    ///            // Done writing
+    ///             break;
+    ///         }
+    ///         Err(e) => {
+    ///             // Error occured;
+    ///             // break
+    ///         }
+    ///     }
+    ///     listener.send_to(&out[..write], &info).unwrap();
+    /// }
+    /// ```
+    pub fn send_once(&self, out: &mut [u8]) -> Result<(usize, quiche::SendInfo)> {
+        self.connection.send(out)
+    }
+
+    /// Wrapper around the underlying socket to send to peer.
+    pub fn send_to(&self, out: &mut [u8], info: &quiche::SendInfo) {
+        self.socket.inner.send_to(out, info.to)
+    }
+
+    /// Uses the underlying quiche Connection [recv](https://docs.rs/quiche/0.10.0/quiche/struct.Connection.html#method.recv)
+    /// method in order to process QUIC packets recieved from the peer.
+    /// 
+    /// # Examples:
+    /// 
+    /// ```no_run
+    /// loop {
+    ///     let (read, from) = listener.
+    /// }
+    /// 
+    /// ```
+    pub fn recv(&self, buf: &mut [u8], info: quiche::RecvInfo) -> Result<usize> {
+        self.connection.recv(buf, info)
+    }
+
+    pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        self.socket.inner.recv_from(buf)
+    }
+}

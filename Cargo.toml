@@ -7,6 +7,7 @@ description = "Socket-esc wrapper on the quiche QUIC implementation"
 readme= "README.md"
 repository="https://github.com/Apolexian/QuicSocket"
 homepage="https://github.com/Apolexian/QuicSocket"
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

@@ -16,8 +16,8 @@ use tokio;
 /// `UdpSocket` should only be used directly if the default configuration used
 /// by `QuicListener::bind` does not meet the required use case.
 pub struct QuicSocket {
-    pub inner: tokio::net::UdpSocket,
-    pub addr: SocketAddr,
+    inner: tokio::net::UdpSocket,
+    addr: SocketAddr,
 }
 
 pub struct QuicListener {
@@ -185,5 +185,97 @@ impl QuicSocket {
             socket: self,
             connection,
         })
+    }
+}
+
+impl QuicListener {
+    /// Uses the underlying quiche Connection [send](https://docs.rs/quiche/0.10.0/quiche/struct.Connection.html#method.send)
+    /// method in order to write a singular QUIC packet to send to the peer.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// loop {
+    ///     let read = match listener.send_once(&mut out).await {
+    ///         Ok(v) => v,
+    ///         Err(std::io::Other) => {
+    ///             // done writing
+    ///             break;
+    ///         }
+    ///         Err(_) => {
+    ///             // handle error
+    ///             break;
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    pub async fn send(&mut self, out: &mut [u8]) -> Result<usize, io::Error> {
+        let (write, info) = match self.connection.send(out) {
+            Ok(v) => v,
+            Err(quiche::Error::Done) => {
+                return Err(io::Error::new(io::ErrorKind::Other, "done writing"))
+            }
+            Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "could not send")),
+        };
+        self.send_to(&mut out[..write], &info).await
+    }
+
+    /// Wrapper around the underlying socket to send to peer.
+    async fn send_to(
+        &self,
+        out: &mut [u8],
+        info: &quiche::SendInfo,
+    ) -> Result<usize, std::io::Error> {
+        self.socket.inner.send_to(out, info.to).await
+    }
+
+    /// Uses the underlying quiche Connection [recv](https://docs.rs/quiche/0.10.0/quiche/struct.Connection.html#method.recv)
+    /// method in order to process QUIC packets received from the peer.
+    ///
+    /// # Examples:
+    ///
+    /// ```no_run
+    /// loop {
+    ///     let read = match listener.recv(&mut buf).unwrap().await {
+    ///         Ok(v) => v,
+    ///         Err(e) => {
+    ///             // handle error
+    ///             break;
+    ///         }
+    ///     };
+    /// }
+    /// ```
+    pub async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        let (read, from) = match self.recv_from(buf).await {
+            Ok(v) => v,
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "could not receive",
+                ))
+            }
+        };
+        let info = self.recv_info(from);
+        match self.connection.recv(&mut buf[..read], info) {
+            Ok(v) => Ok(v),
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "could not receive",
+            )),
+        }
+    }
+
+    /// Wrapper around the underlying socket to receive from peer.
+    async fn recv_from(
+        &self,
+        buf: &mut [u8],
+    ) -> Result<(usize, std::net::SocketAddr), std::io::Error> {
+        self.socket.inner.recv_from(buf).await
+    }
+
+    /// Wrapper around quiche::RecvInfo to convert SocketAddr to
+    /// quiche::RecvInfo
+    fn recv_info(&self, from: SocketAddr) -> quiche::RecvInfo {
+        quiche::RecvInfo { from }
     }
 }

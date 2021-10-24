@@ -16,8 +16,8 @@ use tokio;
 /// `UdpSocket` should only be used directly if the default configuration used
 /// by `QuicListener::bind` does not meet the required use case.
 pub struct QuicSocket {
-    pub inner: tokio::net::UdpSocket,
-    pub addr: SocketAddr,
+    inner: tokio::net::UdpSocket,
+    addr: SocketAddr,
 }
 
 pub struct QuicListener {
@@ -196,45 +196,86 @@ impl QuicListener {
     ///
     /// ```no_run
     /// loop {
-    ///     let {write, info} = match listener.send(&mut out) {
+    ///     let read = match listener.send_once(&mut out).await {
     ///         Ok(v) => v,
-    ///         Err(quiche::Error::done) => {
-    ///            // Done writing
+    ///         Err(std::io::Other) => {
+    ///             // done writing
     ///             break;
     ///         }
-    ///         Err(e) => {
-    ///             // Error occured;
-    ///             // break
+    ///         Err(_) => {
+    ///             // handle error
+    ///             break;
     ///         }
     ///     }
-    ///     listener.send_to(&out[..write], &info).unwrap();
     /// }
     /// ```
-    pub fn send_once(&self, out: &mut [u8]) -> Result<(usize, quiche::SendInfo)> {
-        self.connection.send(out)
+    pub async fn send(&mut self, out: &mut [u8]) -> Result<usize, io::Error> {
+        let (write, info) = match self.connection.send(out) {
+            Ok(v) => v,
+            Err(quiche::Error::Done) => {
+                return Err(io::Error::new(io::ErrorKind::Other, "done writing"))
+            }
+            Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "could not send")),
+        };
+        self.send_to(&mut out[..write], &info).await
     }
 
     /// Wrapper around the underlying socket to send to peer.
-    pub fn send_to(&self, out: &mut [u8], info: &quiche::SendInfo) {
-        self.socket.inner.send_to(out, info.to)
+    async fn send_to(
+        &self,
+        out: &mut [u8],
+        info: &quiche::SendInfo,
+    ) -> Result<usize, std::io::Error> {
+        self.socket.inner.send_to(out, info.to).await
     }
 
     /// Uses the underlying quiche Connection [recv](https://docs.rs/quiche/0.10.0/quiche/struct.Connection.html#method.recv)
-    /// method in order to process QUIC packets recieved from the peer.
-    /// 
+    /// method in order to process QUIC packets received from the peer.
+    ///
     /// # Examples:
-    /// 
+    ///
     /// ```no_run
     /// loop {
-    ///     let (read, from) = listener.
+    ///     let read = match listener.recv(&mut buf).unwrap().await {
+    ///         Ok(v) => v,
+    ///         Err(e) => {
+    ///             // handle error
+    ///             break;
+    ///         }
+    ///     };
     /// }
-    /// 
     /// ```
-    pub fn recv(&self, buf: &mut [u8], info: quiche::RecvInfo) -> Result<usize> {
-        self.connection.recv(buf, info)
+    pub async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        let (read, from) = match self.recv_from(buf).await {
+            Ok(v) => v,
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "could not receive",
+                ))
+            }
+        };
+        let info = self.recv_info(from);
+        match self.connection.recv(&mut buf[..read], info) {
+            Ok(v) => Ok(v),
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "could not receive",
+            )),
+        }
     }
 
-    pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-        self.socket.inner.recv_from(buf)
+    /// Wrapper around the underlying socket to receive from peer.
+    async fn recv_from(
+        &self,
+        buf: &mut [u8],
+    ) -> Result<(usize, std::net::SocketAddr), std::io::Error> {
+        self.socket.inner.recv_from(buf).await
+    }
+
+    /// Wrapper around quiche::RecvInfo to convert SocketAddr to
+    /// quiche::RecvInfo
+    fn recv_info(&self, from: SocketAddr) -> quiche::RecvInfo {
+        quiche::RecvInfo { from }
     }
 }

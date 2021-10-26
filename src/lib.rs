@@ -66,6 +66,21 @@ impl QuicSocket {
         }
     }
 
+    pub async fn recv_from(&self) -> Result<(usize, SocketAddr), io::Error> {
+        let mut buf = [0; 65535];
+        loop {
+            match self.inner.recv_from(&mut buf).await {
+                Ok((len, from)) => return Ok((len, from)),
+                Err(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "recv would block",
+                    ))
+                }
+            };
+        }
+    }
+
     /// Creates new `QuicSocket` from a previously bound `std::net::UdpSocket`.
     ///
     /// The conversion assumes nothing about the underlying socket; it is left up to the user to set it in

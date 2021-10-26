@@ -277,13 +277,7 @@ impl QuicListener {
     /// }
     /// ```
     pub async fn send(&mut self, out: &mut [u8]) -> Result<usize, io::Error> {
-        let (write, info) = match self.connection.send(out) {
-            Ok(v) => v,
-            Err(quiche::Error::Done) => {
-                return Err(io::Error::new(io::ErrorKind::Other, "done writing"))
-            }
-            Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "could not send")),
-        };
+        let (write, info) = self.connection.send(out).unwrap();
         self.send_to(&mut out[..write], &info).await
     }
 

@@ -27,13 +27,13 @@ const DEFAULT_INITIAL_MAX_STREAMS_UNI: u64 = 100;
 /// `UdpSocket` should only be used directly if the default configuration used
 /// by `QuicListener::bind` does not meet the required use case.
 pub struct QuicSocket {
-    inner: tokio::net::UdpSocket,
-    addr: SocketAddr,
+    pub inner: tokio::net::UdpSocket,
+    pub addr: SocketAddr,
 }
 
 pub struct QuicListener {
-    socket: QuicSocket,
-    connection: std::pin::Pin<std::boxed::Box<quiche::Connection>>,
+    pub socket: QuicSocket,
+    pub connection: std::pin::Pin<std::boxed::Box<quiche::Connection>>,
 }
 
 impl QuicSocket {

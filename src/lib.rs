@@ -4,6 +4,17 @@ use std::net::SocketAddr;
 use std::net::UdpSocket as StdUdpSocket;
 use tokio;
 
+const DEFAULT_MAX_DATAGRAM_SIZE: usize = 1350;
+const DEFAULT_MAX_IDLE_TIMEOUT: u64 = 5000;
+const DEFAULT_MAX_RECV_UDP_PAYLOAD_SIZE: usize = DEFAULT_MAX_DATAGRAM_SIZE;
+const DEFAULT_MAX_SEND_UDP_PAYLOAD_SIZE: usize = DEFAULT_MAX_DATAGRAM_SIZE;
+const DEFAULT_INITIAL_MAX_DATA: u64 = 10_000_000;
+const DEFAULT_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL: u64 = 1_000_000;
+const DEFAULT_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE: u64 = 1_000_000;
+const DEFAULT_INITIAL_MAX_STREAM_DATA_UNI: u64 = 1_000_000;
+const DEFAULT_INITIAL_MAX_STREAMS_BIDI: u64 = 100;
+const DEFAULT_INITIAL_MAX_STREAMS_UNI: u64 = 100;
+
 /// A QUIC socket that has not yet been converted to a `QuicListener`.
 ///
 /// `QuicSocket` wraps an underlying operating system UDP socket and enables the caller to
@@ -117,16 +128,23 @@ impl QuicSocket {
     /// #[tokio::main]
     /// async fn main() -> io::Result<()> {
     ///     let addr = "127.0.0.1:8080".parse().unwrap();
-    ///
     ///     let socket = QuicSocket::bind(addr).await?;
-    ///     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
-    ///     let listener = socket.accept(addr, config)?;
+    ///     let listener = socket.accept(addr)?;
     /// # drop(listener);
     ///
     ///     Ok(())
     /// }
     /// ```
-    pub fn accept(self, addr: SocketAddr, mut config: quiche::Config) -> io::Result<QuicListener> {
+    pub fn accept(self, addr: SocketAddr) -> io::Result<QuicListener> {
+        let mut config = match QuicSocket::default_quiche_config() {
+            Ok(conf) => conf,
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "could not create config",
+                ))
+            }
+        };
         let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
         let connection = match quiche::accept(&scid, None, addr, &mut config) {
             Ok(conn) => conn,
@@ -163,14 +181,22 @@ impl QuicSocket {
     ///     let addr = "127.0.0.1:8080".parse().unwrap();
     ///
     ///     let socket = QuicSocket::bind(addr).await?;
-    ///     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
-    ///     let listener = socket.connect(addr, config)?;
+    ///     let listener = socket.connect(addr)?;
     /// # drop(listener);
     ///
     ///     Ok(())
     /// }
     /// ```
-    pub fn connect(self, addr: SocketAddr, mut config: quiche::Config) -> io::Result<QuicListener> {
+    pub fn connect(self, addr: SocketAddr) -> io::Result<QuicListener> {
+        let mut config = match QuicSocket::default_quiche_config() {
+            Ok(conf) => conf,
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "could not create config",
+                ))
+            }
+        };
         let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
         let connection = match quiche::connect(None, &scid, addr, &mut config) {
             Ok(conn) => conn,
@@ -185,6 +211,32 @@ impl QuicSocket {
             socket: self,
             connection,
         })
+    }
+
+    fn default_quiche_config() -> Result<quiche::Config, io::Error> {
+        let mut quiche_config = match quiche::Config::new(quiche::PROTOCOL_VERSION) {
+            Ok(v) => v,
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "could not create config",
+                ))
+            }
+        };
+        quiche_config.set_max_idle_timeout(DEFAULT_MAX_IDLE_TIMEOUT);
+        quiche_config.set_max_recv_udp_payload_size(DEFAULT_MAX_RECV_UDP_PAYLOAD_SIZE);
+        quiche_config.set_max_send_udp_payload_size(DEFAULT_MAX_SEND_UDP_PAYLOAD_SIZE);
+        quiche_config.set_initial_max_data(DEFAULT_INITIAL_MAX_DATA);
+        quiche_config
+            .set_initial_max_stream_data_bidi_local(DEFAULT_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL);
+        quiche_config
+            .set_initial_max_stream_data_bidi_remote(DEFAULT_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE);
+        quiche_config.set_initial_max_stream_data_uni(DEFAULT_INITIAL_MAX_STREAM_DATA_UNI);
+        quiche_config.set_initial_max_streams_bidi(DEFAULT_INITIAL_MAX_STREAMS_BIDI);
+        quiche_config.set_initial_max_streams_uni(DEFAULT_INITIAL_MAX_STREAMS_UNI);
+        quiche_config.set_disable_active_migration(true);
+        quiche_config.enable_early_data();
+        Ok(quiche_config)
     }
 }
 

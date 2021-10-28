@@ -281,16 +281,12 @@ impl QuicListener {
             let (write, info) = match self.connection.send(out) {
                 Ok(v) => v,
                 Err(quiche::Error::Done) => {
-                    println!("Done");
-                    break;
+                    break Ok(());
                 }
-                Err(_) => {
-                    break;
-                }
+                Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
             };
             self.send_to(&mut out[..write], &info).await.unwrap();
         }
-        Ok(())
     }
 
     /// Wrapper around the underlying socket to send to peer.
@@ -325,7 +321,6 @@ impl QuicListener {
                 Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
             };
             let info = self.recv_info(from);
-            println!("{:?}", read);
             match self.connection.recv(&mut buf[..read], info) {
                 Ok(v) => return Ok(v),
                 Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),

@@ -276,23 +276,20 @@ impl QuicListener {
     ///     }
     /// }
     /// ```
-    pub async fn send(&mut self, out: &mut [u8]) -> Result<usize, io::Error> {
-        let mut write = None;
-        let mut info = None;
+    pub async fn send(&mut self, out: &mut [u8]) -> Result<(), io::Error> {
         loop {
-            match self.connection.send(out) {
-                Ok((w, i)) => {
-                    write = Some(w);
-                    info = Some(i);
-                }
+            let (write, info) = match self.connection.send(out) {
+                Ok(v) => v,
                 Err(quiche::Error::Done) => {
                     break;
                 }
-                Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+                Err(_) => {
+                    break;
+                }
             };
+            self.send_to(&mut out[..write], &info).await.unwrap();
         }
-        self.send_to(&mut out[..write.unwrap()], &info.unwrap())
-            .await
+        Ok(())
     }
 
     /// Wrapper around the underlying socket to send to peer.

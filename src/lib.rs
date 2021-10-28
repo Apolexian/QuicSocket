@@ -294,6 +294,7 @@ impl QuicListener {
                 Ok((write, send_info)) => {
                     info = Some(send_info);
                     write_idx = Some(write);
+                    break;
                 }
 
                 Err(quiche::Error::Done) => {

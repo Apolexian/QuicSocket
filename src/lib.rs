@@ -3,6 +3,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::net::UdpSocket as StdUdpSocket;
 use tokio;
+use log::{info};
 
 const DEFAULT_MAX_DATAGRAM_SIZE: usize = 1350;
 const DEFAULT_MAX_IDLE_TIMEOUT: u64 = 5000;
@@ -289,6 +290,7 @@ impl QuicListener {
     pub async fn send(&mut self, out: &mut [u8]) {
         let mut info = None;
         let mut write_idx = None;
+        info!("In send");
         loop {
             match self.connection.send(out) {
                 Ok((write, send_info)) => {
@@ -324,6 +326,7 @@ impl QuicListener {
         out: &mut [u8],
         info: &quiche::SendInfo,
     ) -> Result<usize, std::io::Error> {
+        info!("in send to");
         self.socket.inner.send_to(out, info.to).await
     }
 
@@ -345,6 +348,7 @@ impl QuicListener {
     /// ```
     pub async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         loop {
+            info!("in recv");
             let (read, from) = match self.recv_from(buf).await {
                 Ok(v) => v,
                 Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
@@ -362,6 +366,7 @@ impl QuicListener {
         &self,
         buf: &mut [u8],
     ) -> Result<(usize, std::net::SocketAddr), std::io::Error> {
+        info!("in recv from");
         self.socket.inner.recv_from(buf).await
     }
 

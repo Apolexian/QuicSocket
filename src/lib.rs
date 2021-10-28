@@ -277,9 +277,29 @@ impl QuicListener {
     /// }
     /// ```
     pub async fn send(&mut self, out: &mut [u8]) {
-        let (write, mut send_info) = self.connection.send(out).expect("initial send failed");
+        let mut info = None;
+        let mut write_idx = None;
+        loop {
+            match self.connection.send(out) {
+                Ok((write, send_info)) => {
+                    info = Some(send_info);
+                    write_idx = Some(write);
+                }
 
-        while let Err(e) = self.send_to(&mut out[..write], &mut send_info).await {
+                Err(quiche::Error::Done) => {
+                    // Done writing.
+                    break;
+                }
+
+                Err(e) => {
+                    panic!("send() failed: {:?}", e);
+                }
+            };
+        }
+        while let Err(e) = self
+            .send_to(&mut out[..write_idx.unwrap()], &mut info.unwrap())
+            .await
+        {
             if e.kind() == std::io::ErrorKind::WouldBlock {
                 continue;
             }

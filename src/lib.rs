@@ -160,6 +160,12 @@ impl QuicSocket {
                 ))
             }
         };
+        config.load_cert_chain_from_pem_file("cert.crt").unwrap();
+        config.load_priv_key_from_pem_file("cert.key").unwrap();
+
+        config
+            .set_application_protos(b"\x0ahq-interop\x05hq-29\x05hq-28\x05hq-27\x08http/0.9")
+            .unwrap();
         let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
         let connection = match quiche::accept(&scid, None, addr, &mut config) {
             Ok(conn) => conn,
@@ -212,6 +218,10 @@ impl QuicSocket {
                 ))
             }
         };
+        config.verify_peer(false);
+        config
+            .set_application_protos(b"\x0ahq-interop\x05hq-29\x05hq-28\x05hq-27\x08http/0.9")
+            .unwrap();
         let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
         let connection = match quiche::connect(None, &scid, addr, &mut config) {
             Ok(conn) => conn,
@@ -276,9 +286,35 @@ impl QuicListener {
     ///     }
     /// }
     /// ```
-    pub async fn send(&mut self, out: &mut [u8]) -> Result<usize, io::Error> {
-        let (write, info) = self.connection.send(out).unwrap();
-        self.send_to(&mut out[..write], &info).await
+    pub async fn send(&mut self, out: &mut [u8]) {
+        let mut info = None;
+        let mut write_idx = None;
+        loop {
+            match self.connection.send(out) {
+                Ok((write, send_info)) => {
+                    info = Some(send_info);
+                    write_idx = Some(write);
+                }
+
+                Err(quiche::Error::Done) => {
+                    // Done writing.
+                    break;
+                }
+
+                Err(e) => {
+                    panic!("send() failed: {:?}", e);
+                }
+            };
+        }
+        while let Err(e) = self
+            .send_to(&mut out[..write_idx.unwrap()], &mut info.unwrap())
+            .await
+        {
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                continue;
+            }
+            panic!("send() failed: {:?}", e);
+        }
     }
 
     /// Wrapper around the underlying socket to send to peer.
@@ -307,22 +343,16 @@ impl QuicListener {
     /// }
     /// ```
     pub async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
-        let (read, from) = match self.recv_from(buf).await {
-            Ok(v) => v,
-            Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "could not receive",
-                ))
-            }
-        };
-        let info = self.recv_info(from);
-        match self.connection.recv(&mut buf[..read], info) {
-            Ok(v) => Ok(v),
-            Err(_) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "could not receive",
-            )),
+        loop {
+            let (read, from) = match self.recv_from(buf).await {
+                Ok(v) => v,
+                Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
+            };
+            let info = self.recv_info(from);
+            match self.connection.recv(&mut buf[..read], info) {
+                Ok(v) => return Ok(v),
+                Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
+            };
         }
     }
 

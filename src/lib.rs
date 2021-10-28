@@ -160,6 +160,16 @@ impl QuicSocket {
                 ))
             }
         };
+        config
+            .load_cert_chain_from_pem_file("cert.crt")
+            .unwrap();
+        config
+            .load_priv_key_from_pem_file("cert.key")
+            .unwrap();
+
+        config
+            .set_application_protos(b"\x0ahq-interop\x05hq-29\x05hq-28\x05hq-27\x08http/0.9")
+            .unwrap();
         let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
         let connection = match quiche::accept(&scid, None, addr, &mut config) {
             Ok(conn) => conn,

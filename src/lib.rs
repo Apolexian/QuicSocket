@@ -25,7 +25,7 @@ pub struct QuicListener {
 }
 
 pub struct Client {
-    conn: std::pin::Pin<Box<quiche::Connection>>,
+    pub conn: std::pin::Pin<Box<quiche::Connection>>,
 }
 
 pub type ClientMap = HashMap<quiche::ConnectionId<'static>, Client>;

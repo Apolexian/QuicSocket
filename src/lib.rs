@@ -344,9 +344,10 @@ impl QuicListener {
     ///     };
     /// }
     /// ```
-    pub async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+    pub async fn recv(&mut self) -> Result<usize, io::Error> {
+        let mut buf = [0; 6553];
         loop {
-            let (read, from) = match self.recv_from(buf).await {
+            let (read, from) = match self.recv_from(&mut buf[..]).await {
                 Ok(v) => v,
                 Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
             };

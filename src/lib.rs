@@ -290,9 +290,8 @@ impl QuicListener {
     pub async fn send(&mut self, out: &mut [u8]) {
         let mut info = None;
         let mut write_idx = None;
-        let ext_out = &mut out.repeat(5);
         loop {
-            match self.connection.send(ext_out) {
+            match self.connection.send(out) {
                 Ok((write, send_info)) => {
                     info = Some(send_info);
                     write_idx = Some(write);
@@ -310,7 +309,7 @@ impl QuicListener {
             };
         }
         while let Err(e) = self
-            .send_to(&mut ext_out[..write_idx.unwrap()], &mut info.unwrap())
+            .send_to(&mut out[..write_idx.unwrap()], &mut info.unwrap())
             .await
         {
             if e.kind() == std::io::ErrorKind::WouldBlock {
@@ -347,15 +346,14 @@ impl QuicListener {
     /// }
     /// ```
     pub async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
-        let ext_buf = &mut buf.repeat(5)[..];
         loop {
             info!("in recv");
-            let (read, from) = match self.recv_from(ext_buf).await {
+            let (read, from) = match self.recv_from(buf).await {
                 Ok(v) => v,
                 Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
             };
             let info = self.recv_info(from);
-            match self.connection.recv(&mut ext_buf[..read], info) {
+            match self.connection.recv(&mut buf[..read], info) {
                 Ok(v) => return Ok(v),
                 Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
             };

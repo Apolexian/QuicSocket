@@ -1,9 +1,9 @@
+use log::info;
 use quiche;
 use std::io;
 use std::net::SocketAddr;
 use std::net::UdpSocket as StdUdpSocket;
 use tokio;
-use log::{info};
 
 const DEFAULT_MAX_DATAGRAM_SIZE: usize = 1350;
 const DEFAULT_MAX_IDLE_TIMEOUT: u64 = 5000;
@@ -287,11 +287,12 @@ impl QuicListener {
     ///     }
     /// }
     /// ```
-    pub async fn send(&mut self, out: &mut [u8], paylaod: &[u8]) {
+    pub async fn send(&mut self, paylaod: &[u8]) {
+        let mut out = [0; 512];
         let mut info = None;
         let mut write_idx = None;
         loop {
-            match self.connection.send(out) {
+            match self.connection.send(&mut out[..]) {
                 Ok((write, send_info)) => {
                     info = Some(send_info);
                     write_idx = Some(write);
@@ -309,10 +310,7 @@ impl QuicListener {
             };
         }
         let mut packet = [&out[..write_idx.unwrap()], &paylaod[..]].concat();
-        while let Err(e) = self
-            .send_to(&mut packet, &mut info.unwrap())
-            .await
-        {
+        while let Err(e) = self.send_to(&mut packet, &mut info.unwrap()).await {
             if e.kind() == std::io::ErrorKind::WouldBlock {
                 continue;
             }

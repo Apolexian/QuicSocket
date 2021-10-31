@@ -287,7 +287,7 @@ impl QuicListener {
     ///     }
     /// }
     /// ```
-    pub async fn send(&mut self, out: &mut [u8]) {
+    pub async fn send(&mut self, out: &mut [u8], paylaod: &[u8]) {
         let mut info = None;
         let mut write_idx = None;
         loop {
@@ -308,8 +308,9 @@ impl QuicListener {
                 }
             };
         }
+        let mut packet = [&out[..write_idx.unwrap()], &paylaod[..]].concat();
         while let Err(e) = self
-            .send_to(&mut out[..write_idx.unwrap()], &mut info.unwrap())
+            .send_to(&mut packet, &mut info.unwrap())
             .await
         {
             if e.kind() == std::io::ErrorKind::WouldBlock {
@@ -347,7 +348,6 @@ impl QuicListener {
     /// ```
     pub async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         loop {
-            info!("in recv");
             let (read, from) = match self.recv_from(buf).await {
                 Ok(v) => v,
                 Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),

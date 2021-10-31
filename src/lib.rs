@@ -31,7 +31,7 @@ pub struct Client {
 pub type ClientMap = HashMap<quiche::ConnectionId<'static>, Client>;
 
 impl QuicListener {
-    pub fn new(&self, addr: SocketAddr) -> io::Result<QuicListener> {
+    pub fn new(addr: SocketAddr) -> io::Result<QuicListener> {
         let socket = net::UdpSocket::bind(addr).unwrap();
         let socket = mio::net::UdpSocket::from_socket(socket).unwrap();
         let clients = ClientMap::new();

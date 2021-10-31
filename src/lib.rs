@@ -35,14 +35,21 @@ pub struct QuicSocket {
 
 pub struct QuicListener {
     pub socket: QuicSocket,
-    pub connection: std::pin::Pin<std::boxed::Box<quiche::Connection>>,
+    pub clients: ClientMap,
 }
 
-struct Client {
+struct PartialResponse {
+    body: Vec<u8>,
+
+    written: usize,
+}
+
+pub struct Client {
     conn: std::pin::Pin<Box<quiche::Connection>>,
+    partial_responses: HashMap<u64, PartialResponse>,
 }
 
-type ClientMap = HashMap<quiche::ConnectionId<'static>, Client>;
+pub type ClientMap = HashMap<quiche::ConnectionId<'static>, Client>;
 
 impl QuicSocket {
     /// Create a new underlying UDP socket and attempts to bind it to the addr provided
@@ -110,7 +117,7 @@ impl QuicSocket {
     ///     Ok(())
     /// }
     /// ```
-    pub fn accept(self, addr: SocketAddr) -> io::Result<QuicListener> {
+    pub fn accept(self) -> io::Result<QuicListener> {
         let mut config = match QuicSocket::default_quiche_config() {
             Ok(conf) => conf,
             Err(_) => {
@@ -126,38 +133,26 @@ impl QuicSocket {
         config
             .set_application_protos(b"\x0ahq-interop\x05hq-29\x05hq-28\x05hq-27\x08http/0.9")
             .unwrap();
-        let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
-        let connection = match quiche::accept(&scid, None, addr, &mut config) {
-            Ok(conn) => conn,
-            Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::ConnectionRefused,
-                    "could not connect",
-                ))
-            }
-        };
         let poll = mio::Poll::new().unwrap();
         let mut events = mio::Events::with_capacity(1024);
-        let mut clients = ClientMap::new();
-        let listener = QuicListener {
+        let clients = ClientMap::new();
+        let mut listener = QuicListener {
             socket: self,
-            connection,
+            clients,
         };
         let mut buf = [0; 65535];
         let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
-        poll.register(
-            &listener.socket.inner,
-            mio::Token(0),
-            mio::Ready::readable(),
-            mio::PollOpt::edge(),
-        )
-        .unwrap();
+        let rng = SystemRandom::new();
+        let conn_id_seed = ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
         loop {
-            let timeout = clients.values().filter_map(|c| c.conn.timeout()).min();
+            let timeout = listener
+                .clients
+                .values()
+                .filter_map(|c| c.conn.timeout())
+                .min();
             poll.poll(&mut events, timeout).unwrap();
             'read: loop {
                 if events.is_empty() {
-                    clients.values_mut().for_each(|c| c.conn.on_timeout());
                     break 'read;
                 }
                 let (len, from) = match listener.socket.inner.recv_from(&mut buf) {
@@ -169,30 +164,31 @@ impl QuicSocket {
                         panic!("recv() failed: {:?}", e);
                     }
                 };
-                let pkt_buf = &mut buf[..len];
-
-                let hdr = match quiche::Header::from_slice(pkt_buf, quiche::MAX_CONN_ID_LEN) {
+                let packet = &mut buf[..len];
+                let header = match quiche::Header::from_slice(packet, quiche::MAX_CONN_ID_LEN) {
                     Ok(v) => v,
                     Err(_) => {
                         continue 'read;
                     }
                 };
-                let rng = SystemRandom::new();
-                let conn_id_seed =
-                    ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
-                let conn_id = ring::hmac::sign(&conn_id_seed, &hdr.dcid);
+                let conn_id = ring::hmac::sign(&conn_id_seed, &header.dcid);
                 let conn_id = &conn_id.as_ref()[..quiche::MAX_CONN_ID_LEN];
                 let conn_id = conn_id.to_vec().into();
-
-                let client = if !clients.contains_key(&hdr.dcid) && !clients.contains_key(&conn_id)
+                // lookup connection or create a new one
+                let client = if !listener.clients.contains_key(&header.dcid)
+                    && !listener.clients.contains_key(&conn_id)
                 {
-                    if hdr.ty != quiche::Type::Initial {
+                    if header.ty != quiche::Type::Initial {
                         continue 'read;
                     }
-                    if !quiche::version_is_supported(hdr.version) {
-                        let len =
-                            quiche::negotiate_version(&hdr.scid, &hdr.dcid, &mut out).unwrap();
+
+                    // version negotiation
+                    if !quiche::version_is_supported(header.version) {
+                        let len = quiche::negotiate_version(&header.scid, &header.dcid, &mut out)
+                            .unwrap();
+
                         let out = &out[..len];
+
                         if let Err(e) = listener.socket.inner.send_to(out, &from) {
                             if e.kind() == std::io::ErrorKind::WouldBlock {
                                 break;
@@ -204,15 +200,18 @@ impl QuicSocket {
                     let mut scid = [0; quiche::MAX_CONN_ID_LEN];
                     scid.copy_from_slice(&conn_id);
                     let scid = quiche::ConnectionId::from_ref(&scid);
-                    let token = hdr.token.as_ref().unwrap();
+                    let token = header.token.as_ref().unwrap();
+
+                    // do a stateless retry if the client didn't send a token
                     if token.is_empty() {
-                        let new_token = mint_token(&hdr, &from);
+                        let new_token = mint_token(&header, &from);
+
                         let len = quiche::retry(
-                            &hdr.scid,
-                            &hdr.dcid,
+                            &header.scid,
+                            &header.dcid,
                             &scid,
                             &new_token,
-                            hdr.version,
+                            header.version,
                             &mut out,
                         )
                         .unwrap();
@@ -221,70 +220,103 @@ impl QuicSocket {
                             if e.kind() == std::io::ErrorKind::WouldBlock {
                                 break;
                             }
+
                             panic!("send() failed: {:?}", e);
                         }
                         continue 'read;
                     }
                     let odcid = validate_token(&from, token);
+
                     if odcid.is_none() {
                         continue 'read;
                     }
-                    if scid.len() != hdr.dcid.len() {
+
+                    if scid.len() != header.dcid.len() {
                         continue 'read;
                     }
-                    let scid = hdr.dcid.clone();
 
+                    // reuse the source connection id
+                    let scid = header.dcid.clone();
+
+                    // new connection
                     let conn = quiche::accept(&scid, odcid.as_ref(), from, &mut config).unwrap();
 
-                    let client = Client { conn };
-                    clients.insert(scid.clone(), client);
-                    clients.get_mut(&scid).unwrap()
+                    let client = Client {
+                        conn,
+                        partial_responses: HashMap::new(),
+                    };
+
+                    listener.clients.insert(scid.clone(), client);
+
+                    listener.clients.get_mut(&scid).unwrap()
                 } else {
-                    match clients.get_mut(&hdr.dcid) {
+                    match listener.clients.get_mut(&header.dcid) {
                         Some(v) => v,
-                        None => clients.get_mut(&conn_id).unwrap(),
+
+                        None => listener.clients.get_mut(&conn_id).unwrap(),
                     }
                 };
                 let recv_info = quiche::RecvInfo { from };
-                // Process potentially coalesced packets.
-                match client.conn.recv(pkt_buf, recv_info) {
+
+                // process potentially coalesced packets.
+                match client.conn.recv(packet, recv_info) {
                     Ok(v) => v,
                     Err(_) => {
                         continue 'read;
                     }
                 };
-            }
-            for client in clients.values_mut() {
-                loop {
-                    let (write, send_info) = match client.conn.send(&mut out) {
-                        Ok(v) => v,
-                        Err(quiche::Error::Done) => {
-                            break;
+
+                if client.conn.is_in_early_data() || client.conn.is_established() {
+                    // Handle writable streams.
+                    for stream_id in client.conn.writable() {
+                        handle_writable(client, stream_id);
+                    }
+                    // Process all readable streams.
+                    for s in client.conn.readable() {
+                        while let Ok((_, _)) = client.conn.stream_recv(s, &mut buf) {
+                            handle_stream(client, s);
                         }
-                        Err(_) => {
-                            client.conn.close(false, 0x1, b"fail").ok();
-                            break;
-                        }
-                    };
-                    if let Err(e) = listener.socket.inner.send_to(&out[..write], &send_info.to) {
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            break;
-                        }
-                        panic!("send() failed: {:?}", e);
                     }
                 }
-            }
-            // Garbage collect closed connections.
-            clients.retain(|_, ref mut c| {
-                if c.conn.is_closed() {
-                    info!(
-                        "{} connection collected {:?}",
-                        c.conn.trace_id(),
-                        c.conn.stats()
-                    );
+
+                for client in listener.clients.values_mut() {
+                    loop {
+                        let (write, send_info) = match client.conn.send(&mut out) {
+                            Ok(v) => v,
+
+                            Err(quiche::Error::Done) => {
+                                break;
+                            }
+
+                            Err(_) => {
+                                client.conn.close(false, 0x1, b"fail").ok();
+                                break;
+                            }
+                        };
+
+                        if let Err(e) = listener.socket.inner.send_to(&out[..write], &send_info.to)
+                        {
+                            if e.kind() == std::io::ErrorKind::WouldBlock {
+                                break;
+                            }
+                            panic!("send() failed: {:?}", e);
+                        }
+                    }
                 }
-                !c.conn.is_closed()
-            });
+
+                // Garbage collect closed connections.
+                listener.clients.retain(|_, ref mut c| {
+                    if c.conn.is_closed() {
+                        info!(
+                            "{} connection collected {:?}",
+                            c.conn.trace_id(),
+                            c.conn.stats()
+                        );
+                    }
+
+                    !c.conn.is_closed()
+                });
+            }
         }
     }
 
@@ -330,19 +362,11 @@ impl QuicSocket {
             .unwrap();
         let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
         let poll = mio::Poll::new().unwrap();
-        let connection = match quiche::connect(None, &scid, addr, &mut config) {
-            Ok(conn) => conn,
-            Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::ConnectionRefused,
-                    "could not connect",
-                ))
-            }
-        };
         let mut events = mio::Events::with_capacity(1024);
-        let mut listener = QuicListener {
+        let clients = ClientMap::new();
+        let listener = QuicListener {
             socket: self,
-            connection,
+            clients,
         };
         poll.register(
             &listener.socket.inner,
@@ -353,25 +377,22 @@ impl QuicSocket {
         .unwrap();
         let mut buf = [0; 65535];
         let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
-        let (write, send_info) = listener
-            .connection
-            .send(&mut out)
-            .expect("initial send failed");
+        let mut conn = quiche::connect(None, &scid, addr, &mut config).unwrap();
+        let (write, send_info) = conn.send(&mut out).expect("initial send failed");
         while let Err(e) = listener.socket.inner.send_to(&out[..write], &send_info.to) {
             if e.kind() == std::io::ErrorKind::WouldBlock {
                 continue;
             }
             panic!("send() failed: {:?}", e);
         }
-
+        let mut req_sent = false;
         loop {
-            poll.poll(&mut events, listener.connection.timeout())
-                .unwrap();
+            poll.poll(&mut events, conn.timeout()).unwrap();
             'read: loop {
                 if events.is_empty() {
-                    listener.connection.on_timeout();
                     break 'read;
                 }
+
                 let (len, from) = match listener.socket.inner.recv_from(&mut buf) {
                     Ok(v) => v,
                     Err(e) => {
@@ -382,18 +403,52 @@ impl QuicSocket {
                     }
                 };
                 let recv_info = quiche::RecvInfo { from };
-                match listener.connection.recv(&mut buf[..len], recv_info) {
+                let _ = match conn.recv(&mut buf[..len], recv_info) {
                     Ok(v) => v,
                     Err(_) => {
                         continue 'read;
                     }
                 };
-            }
-            if listener.connection.is_closed() {
-                break;
+                if conn.is_closed() {
+                    break;
+                }
+                if conn.is_established() && !req_sent {
+                    conn.stream_send(1, b"test", true).unwrap();
+                    req_sent = true;
+                }
+                for s in conn.readable() {
+                    while let Ok((read, fin)) = conn.stream_recv(s, &mut buf) {
+                        let stream_buf = &buf[..read];
+                        print!("{}", unsafe { std::str::from_utf8_unchecked(stream_buf) });
+                        if s == 1 && fin {
+                            conn.close(true, 0x00, b"bye").unwrap();
+                        }
+                    }
+                }
+                loop {
+                    let (write, send_info) = match conn.send(&mut out) {
+                        Ok(v) => v,
+                        Err(quiche::Error::Done) => {
+                            break;
+                        }
+                        Err(_) => {
+                            conn.close(false, 0x1, b"fail").ok();
+                            break;
+                        }
+                    };
+                    if let Err(e) = listener.socket.inner.send_to(&out[..write], &send_info.to) {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            break;
+                        }
+                        panic!("send() failed: {:?}", e);
+                    }
+                }
+                if conn.is_closed() {
+                    info!("connection closed, {:?}", conn.stats());
+                    break;
+                }
             }
         }
-        Ok(listener)
     }
 
     fn default_quiche_config() -> Result<quiche::Config, io::Error> {
@@ -423,109 +478,7 @@ impl QuicSocket {
     }
 }
 
-impl QuicListener {
-    /// Uses the underlying quiche Connection [send](https://docs.rs/quiche/0.10.0/quiche/struct.Connection.html#method.send)
-    /// method in order to write a singular QUIC packet to send to the peer.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// loop {
-    ///     let read = match listener.send_once(&mut out).await {
-    ///         Ok(v) => v,
-    ///         Err(std::io::Other) => {
-    ///             // done writing
-    ///             break;
-    ///         }
-    ///         Err(_) => {
-    ///             // handle error
-    ///             break;
-    ///         }
-    ///     }
-    /// }
-    /// ```
-    pub async fn send(&mut self, paylaod: &[u8]) {
-        let mut out = [0; 512];
-        let mut info = None;
-        let mut write_idx = None;
-        loop {
-            match self.connection.send(&mut out[..]) {
-                Ok((write, send_info)) => {
-                    info = Some(send_info);
-                    write_idx = Some(write);
-                    break;
-                }
-
-                Err(quiche::Error::Done) => {
-                    // Done writing.
-                    break;
-                }
-
-                Err(e) => {
-                    panic!("send() failed: {:?}", e);
-                }
-            };
-        }
-        let mut packet = [&out[..write_idx.unwrap()], &paylaod[..]].concat();
-        while let Err(e) = self.send_to(&mut packet, &mut info.unwrap()) {
-            if e.kind() == std::io::ErrorKind::WouldBlock {
-                continue;
-            }
-            panic!("send() failed: {:?}", e);
-        }
-    }
-
-    /// Wrapper around the underlying socket to send to peer.
-    fn send_to(&self, out: &mut [u8], info: &quiche::SendInfo) -> Result<usize, std::io::Error> {
-        info!("in send to");
-        self.socket.inner.send_to(out, &info.to)
-    }
-
-    /// Uses the underlying quiche Connection [recv](https://docs.rs/quiche/0.10.0/quiche/struct.Connection.html#method.recv)
-    /// method in order to process QUIC packets received from the peer.
-    ///
-    /// # Examples:
-    ///
-    /// ```no_run
-    /// loop {
-    ///     let read = match listener.recv(&mut buf).unwrap().await {
-    ///         Ok(v) => v,
-    ///         Err(e) => {
-    ///             // handle error
-    ///             break;
-    ///         }
-    ///     };
-    /// }
-    /// ```
-    pub async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
-        loop {
-            let (read, from) = match self.recv_from(buf).await {
-                Ok(v) => v,
-                Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
-            };
-            let info = self.recv_info(from);
-            match self.connection.recv(&mut buf[..read], info) {
-                Ok(v) => return Ok(v),
-                Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
-            };
-        }
-    }
-
-    /// Wrapper around the underlying socket to receive from peer.
-    async fn recv_from(
-        &self,
-        buf: &mut [u8],
-    ) -> Result<(usize, std::net::SocketAddr), std::io::Error> {
-        info!("in recv from");
-        self.socket.inner.recv_from(buf)
-    }
-
-    /// Wrapper around quiche::RecvInfo to convert SocketAddr to
-    /// quiche::RecvInfo
-    fn recv_info(&self, from: SocketAddr) -> quiche::RecvInfo {
-        quiche::RecvInfo { from }
-    }
-}
+impl QuicListener {}
 
 fn validate_token<'a>(src: &net::SocketAddr, token: &'a [u8]) -> Option<quiche::ConnectionId<'a>> {
     if token.len() < 6 {
@@ -564,4 +517,56 @@ fn mint_token(hdr: &quiche::Header, src: &net::SocketAddr) -> Vec<u8> {
     token.extend_from_slice(&hdr.dcid);
 
     token
+}
+
+fn handle_writable(client: &mut Client, stream_id: u64) {
+    let conn = &mut client.conn;
+
+    if !client.partial_responses.contains_key(&stream_id) {
+        return;
+    }
+
+    let resp = client.partial_responses.get_mut(&stream_id).unwrap();
+    let body = &resp.body[resp.written..];
+
+    let written = match conn.stream_send(stream_id, body, true) {
+        Ok(v) => v,
+
+        Err(quiche::Error::Done) => 0,
+
+        Err(_) => {
+            client.partial_responses.remove(&stream_id);
+
+            return;
+        }
+    };
+
+    resp.written += written;
+
+    if resp.written == resp.body.len() {
+        client.partial_responses.remove(&stream_id);
+    }
+}
+
+fn handle_stream(client: &mut Client, stream_id: u64) {
+    let conn = &mut client.conn;
+    let body = [0; 1];
+
+    let written = match conn.stream_send(stream_id, &body, true) {
+        Ok(v) => v,
+
+        Err(quiche::Error::Done) => 0,
+
+        Err(_) => {
+            return;
+        }
+    };
+
+    if written < body.len() {
+        let response = PartialResponse {
+            body: body.to_vec(),
+            written,
+        };
+        client.partial_responses.insert(stream_id, response);
+    }
 }

@@ -126,29 +126,6 @@ impl QuicListener {
                 let scid = quiche::ConnectionId::from_ref(&scid);
                 let token = header.token.as_ref().unwrap();
 
-                // do a stateless retry if the client didn't send a token
-                if token.is_empty() {
-                    let new_token = mint_token(&header, &from);
-
-                    let len = quiche::retry(
-                        &header.scid,
-                        &header.dcid,
-                        &scid,
-                        &new_token,
-                        header.version,
-                        &mut out,
-                    )
-                    .unwrap();
-                    let out = &out[..len];
-                    if let Err(e) = self.socket.send_to(out, &from) {
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            break;
-                        }
-
-                        panic!("send() failed: {:?}", e);
-                    }
-                    continue 'read;
-                }
                 let odcid = validate_token(&from, token);
 
                 if odcid.is_none() {
@@ -296,20 +273,4 @@ fn validate_token<'a>(src: &net::SocketAddr, token: &'a [u8]) -> Option<quiche::
     }
 
     Some(quiche::ConnectionId::from_ref(&token[addr.len()..]))
-}
-
-fn mint_token(hdr: &quiche::Header, src: &net::SocketAddr) -> Vec<u8> {
-    let mut token = Vec::new();
-
-    token.extend_from_slice(b"quiche");
-
-    let addr = match src.ip() {
-        std::net::IpAddr::V4(a) => a.octets().to_vec(),
-        std::net::IpAddr::V6(a) => a.octets().to_vec(),
-    };
-
-    token.extend_from_slice(&addr);
-    token.extend_from_slice(&hdr.dcid);
-
-    token
 }

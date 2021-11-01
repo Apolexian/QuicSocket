@@ -163,10 +163,19 @@ impl QuicListener {
                 let scid = header.dcid.clone();
 
                 // new connection
-                let conn = quiche::accept(&scid, odcid.as_ref(), from, &mut config).unwrap();
-
-                self.connection = Some(conn);
-                return Ok(());
+                let mut conn = quiche::accept(&scid, odcid.as_ref(), from, &mut config).unwrap();
+                if conn.is_established() {
+                    self.connection = Some(conn);
+                    return Ok(());
+                } else {
+                    let (write, _) = conn.send(&mut out).expect("initial send failed");
+                    if let Err(e) = self.socket.send_to(&mut out[..write], &from) {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            break;
+                        }
+                        panic!("send() failed: {:?}", e);
+                    }
+                }
             }
         }
     }
@@ -247,7 +256,16 @@ impl QuicListener {
                         panic!("send() failed: {:?}", e);
                     }
                     continue 'read;
-                };
+                } else {
+                    let (write, _) = conn.send(&mut out).expect("initial send failed");
+                    if let Err(e) = self.socket.send_to(&mut out[..write], &from) {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            break;
+                        }
+                        panic!("send() failed: {:?}", e);
+                    }
+                }
+
                 if conn.is_established() {
                     self.connection = Some(conn);
                     return Ok(());

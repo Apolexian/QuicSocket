@@ -1,6 +1,6 @@
 [package]
 name = "quic-socket"
-version = "0.4.1"
+version = "0.6.1"
 edition = "2021"
 authors = ["Ivan Nikitin <ivan@niktivan.org>"]
 description = "Socket-esc wrapper on the quiche QUIC implementation"
@@ -14,3 +14,6 @@ license = "MIT"
 [dependencies]
 tokio = {version = "1.12.0", features = ["net"]}
 quiche = "0.10.0"
+log = "0.4.14"
+mio = "0.6"
+ring = "0.16"

@@ -69,6 +69,13 @@ impl QuicListener {
         let mut buf = [0; 65535];
         let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
         let rng = SystemRandom::new();
+        poll.register(
+            & self.socket,
+            mio::Token(0),
+            mio::Ready::readable(),
+            mio::PollOpt::edge(),
+        )
+        .unwrap();
         let conn_id_seed = ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
         loop {
             poll.poll(&mut events, None).unwrap();

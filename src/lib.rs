@@ -48,7 +48,7 @@ impl QuicListener {
         }
     }
 
-    pub fn accept(&mut self) -> io::Result<io::Error> {
+    pub fn accept(&mut self) -> Result<(), io::Error> {
         let mut config = match self.default_quiche_config() {
             Ok(conf) => conf,
             Err(_) => {
@@ -159,6 +159,7 @@ impl QuicListener {
                 let conn = quiche::accept(&scid, odcid.as_ref(), from, &mut config).unwrap();
 
                 self.connection = Some(conn);
+                return Ok(())
             }
         }
     }

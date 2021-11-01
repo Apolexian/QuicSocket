@@ -236,17 +236,10 @@ impl QuicListener {
                     }
                 };
                 if header.ty == quiche::Type::Retry {
-                    let retry_len = quiche::retry(
-                        &header.scid,
-                        &header.dcid,
-                        &scid,
-                        &header.token.unwrap(),
-                        header.version,
-                        &mut buf,
-                    )
-                    .unwrap();
-                    let out = &out[..retry_len];
-                    if let Err(e) = self.socket.send_to(out, &from) {
+                    let (write, _) = conn.send(&mut out).expect("initial send failed");
+                    let mut initial_with_retry =
+                        [&out[..write], &header.token.unwrap()[..]].concat();
+                    if let Err(e) = self.socket.send_to(&mut initial_with_retry[..], &from) {
                         if e.kind() == std::io::ErrorKind::WouldBlock {
                             break;
                         }

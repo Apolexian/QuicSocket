@@ -1,6 +1,5 @@
 use quiche;
 use ring::rand::*;
-use std::collections::HashMap;
 use std::io;
 use std::net;
 use std::net::SocketAddr;
@@ -19,25 +18,16 @@ const DEFAULT_INITIAL_MAX_STREAMS_UNI: u64 = 100;
 
 pub struct QuicListener {
     pub socket: mio::net::UdpSocket,
-    pub clients: ClientMap,
     pub connection: Option<Pin<Box<quiche::Connection>>>,
     pub is_server: bool,
 }
-
-pub struct Client {
-    pub conn: std::pin::Pin<Box<quiche::Connection>>,
-}
-
-pub type ClientMap = HashMap<quiche::ConnectionId<'static>, Client>;
 
 impl QuicListener {
     pub fn new(addr: SocketAddr) -> io::Result<QuicListener> {
         let socket = net::UdpSocket::bind(addr).unwrap();
         let socket = mio::net::UdpSocket::from_socket(socket).unwrap();
-        let clients = ClientMap::new();
         Ok(QuicListener {
             socket,
-            clients: clients,
             connection: None,
             is_server: false,
         })
@@ -81,8 +71,7 @@ impl QuicListener {
         let rng = SystemRandom::new();
         let conn_id_seed = ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
         loop {
-            let timeout = self.clients.values().filter_map(|c| c.conn.timeout()).min();
-            poll.poll(&mut events, timeout).unwrap();
+            poll.poll(&mut events, None).unwrap();
             'read: loop {
                 if events.is_empty() {
                     break 'read;
@@ -105,84 +94,71 @@ impl QuicListener {
                 };
                 let conn_id = ring::hmac::sign(&conn_id_seed, &header.dcid);
                 let conn_id = &conn_id.as_ref()[..quiche::MAX_CONN_ID_LEN];
-                let conn_id = conn_id.to_vec().into();
-                // lookup connection or create a new one
-                if !self.clients.contains_key(&header.dcid) && !self.clients.contains_key(&conn_id)
-                {
-                    if header.ty != quiche::Type::Initial {
-                        continue 'read;
-                    }
 
-                    // version negotiation
-                    if !quiche::version_is_supported(header.version) {
-                        let len = quiche::negotiate_version(&header.scid, &header.dcid, &mut out)
-                            .unwrap();
+                if header.ty != quiche::Type::Initial {
+                    continue 'read;
+                }
 
-                        let out = &out[..len];
+                // version negotiation
+                if !quiche::version_is_supported(header.version) {
+                    let len =
+                        quiche::negotiate_version(&header.scid, &header.dcid, &mut out).unwrap();
 
-                        if let Err(e) = self.socket.send_to(out, &from) {
-                            if e.kind() == std::io::ErrorKind::WouldBlock {
-                                break;
-                            }
-                            panic!("send() failed: {:?}", e);
+                    let out = &out[..len];
+
+                    if let Err(e) = self.socket.send_to(out, &from) {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            break;
                         }
-                        continue 'read;
+                        panic!("send() failed: {:?}", e);
                     }
-                    let mut scid = [0; quiche::MAX_CONN_ID_LEN];
-                    scid.copy_from_slice(&conn_id);
-                    let scid = quiche::ConnectionId::from_ref(&scid);
-                    let token = header.token.as_ref().unwrap();
+                    continue 'read;
+                }
+                let mut scid = [0; quiche::MAX_CONN_ID_LEN];
+                scid.copy_from_slice(&conn_id);
+                let scid = quiche::ConnectionId::from_ref(&scid);
+                let token = header.token.as_ref().unwrap();
 
-                    // do a stateless retry if the client didn't send a token
-                    if token.is_empty() {
-                        let new_token = mint_token(&header, &from);
+                // do a stateless retry if the client didn't send a token
+                if token.is_empty() {
+                    let new_token = mint_token(&header, &from);
 
-                        let len = quiche::retry(
-                            &header.scid,
-                            &header.dcid,
-                            &scid,
-                            &new_token,
-                            header.version,
-                            &mut out,
-                        )
-                        .unwrap();
-                        let out = &out[..len];
-                        if let Err(e) = self.socket.send_to(out, &from) {
-                            if e.kind() == std::io::ErrorKind::WouldBlock {
-                                break;
-                            }
-
-                            panic!("send() failed: {:?}", e);
+                    let len = quiche::retry(
+                        &header.scid,
+                        &header.dcid,
+                        &scid,
+                        &new_token,
+                        header.version,
+                        &mut out,
+                    )
+                    .unwrap();
+                    let out = &out[..len];
+                    if let Err(e) = self.socket.send_to(out, &from) {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            break;
                         }
-                        continue 'read;
+
+                        panic!("send() failed: {:?}", e);
                     }
-                    let odcid = validate_token(&from, token);
+                    continue 'read;
+                }
+                let odcid = validate_token(&from, token);
 
-                    if odcid.is_none() {
-                        continue 'read;
-                    }
+                if odcid.is_none() {
+                    continue 'read;
+                }
 
-                    if scid.len() != header.dcid.len() {
-                        continue 'read;
-                    }
+                if scid.len() != header.dcid.len() {
+                    continue 'read;
+                }
 
-                    // reuse the source connection id
-                    let scid = header.dcid.clone();
+                // reuse the source connection id
+                let scid = header.dcid.clone();
 
-                    // new connection
-                    let conn = quiche::accept(&scid, odcid.as_ref(), from, &mut config).unwrap();
+                // new connection
+                let conn = quiche::accept(&scid, odcid.as_ref(), from, &mut config).unwrap();
 
-                    let client = Client { conn };
-
-                    self.clients.insert(scid.clone(), client);
-
-                    self.clients.get_mut(&scid).unwrap()
-                } else {
-                    match self.clients.get_mut(&header.dcid) {
-                        Some(v) => v,
-                        None => self.clients.get_mut(&conn_id).unwrap(),
-                    }
-                };
+                self.connection = Some(conn);
             }
         }
     }
@@ -250,6 +226,18 @@ impl QuicListener {
                 }
             }
         }
+    }
+
+    pub fn stream_recv(&mut self, stream_id: u64, out: &mut [u8]) -> io::Result<(usize, bool)> {
+        let mut conn = self.connection.take().unwrap();
+        while let Ok((read, fin)) = conn.stream_recv(stream_id, out) {
+            if fin {
+                self.connection = Some(conn);
+                return Ok((read, fin));
+            }
+        }
+        self.connection = Some(conn);
+        Ok((0, false))
     }
 
     fn default_quiche_config(&self) -> Result<quiche::Config, io::Error> {

@@ -70,7 +70,7 @@ impl QuicListener {
         let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
         let rng = SystemRandom::new();
         poll.register(
-            & self.socket,
+            &self.socket,
             mio::Token(0),
             mio::Ready::readable(),
             mio::PollOpt::edge(),
@@ -126,6 +126,29 @@ impl QuicListener {
                 let scid = quiche::ConnectionId::from_ref(&scid);
                 let token = header.token.as_ref().unwrap();
 
+                // do a stateless retry if the client didn't send a token
+                if token.is_empty() {
+                    let new_token = mint_token(&header, &from);
+
+                    let len = quiche::retry(
+                        &header.scid,
+                        &header.dcid,
+                        &scid,
+                        &new_token,
+                        header.version,
+                        &mut out,
+                    )
+                    .unwrap();
+                    let out = &out[..len];
+                    if let Err(e) = self.socket.send_to(out, &from) {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            break;
+                        }
+
+                        panic!("send() failed: {:?}", e);
+                    }
+                    continue 'read;
+                }
                 let odcid = validate_token(&from, token);
 
                 if odcid.is_none() {
@@ -143,7 +166,7 @@ impl QuicListener {
                 let conn = quiche::accept(&scid, odcid.as_ref(), from, &mut config).unwrap();
 
                 self.connection = Some(conn);
-                return Ok(())
+                return Ok(());
             }
         }
     }
@@ -199,11 +222,38 @@ impl QuicListener {
                     }
                 };
                 let recv_info = quiche::RecvInfo { from };
-                let _ = match conn.recv(&mut buf[..len], recv_info) {
+                let read = match conn.recv(&mut buf[..len], recv_info) {
                     Ok(v) => v,
                     Err(_) => {
                         continue 'read;
                     }
+                };
+                let packet = &mut buf[..read];
+                let header = match quiche::Header::from_slice(packet, quiche::MAX_CONN_ID_LEN) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        continue 'read;
+                    }
+                };
+                if header.ty == quiche::Type::Retry {
+                    let retry_len = quiche::retry(
+                        &header.scid,
+                        &header.dcid,
+                        &scid,
+                        &header.token.unwrap(),
+                        header.version,
+                        &mut buf,
+                    )
+                    .unwrap();
+                    let out = &out[..retry_len];
+                    if let Err(e) = self.socket.send_to(out, &from) {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            break;
+                        }
+
+                        panic!("send() failed: {:?}", e);
+                    }
+                    continue 'read;
                 };
                 if conn.is_established() {
                     self.connection = Some(conn);
@@ -273,4 +323,20 @@ fn validate_token<'a>(src: &net::SocketAddr, token: &'a [u8]) -> Option<quiche::
     }
 
     Some(quiche::ConnectionId::from_ref(&token[addr.len()..]))
+}
+
+fn mint_token(hdr: &quiche::Header, src: &net::SocketAddr) -> Vec<u8> {
+    let mut token = Vec::new();
+
+    token.extend_from_slice(b"quiche");
+
+    let addr = match src.ip() {
+        std::net::IpAddr::V4(a) => a.octets().to_vec(),
+        std::net::IpAddr::V6(a) => a.octets().to_vec(),
+    };
+
+    token.extend_from_slice(&addr);
+    token.extend_from_slice(&hdr.dcid);
+
+    token
 }

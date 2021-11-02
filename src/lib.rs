@@ -183,7 +183,10 @@ impl QuicListener {
                     self.connection = Some(conn);
                 }
             }
-            // Generate outgoing QUIC packets
+            // Generate outgoing QUIC packets for connection
+            if self.connection.is_none() {
+                continue;
+            }
             let mut conn = self.connection.take().unwrap();
             // if handshake is complete then connection establishment is done
             // then we can return as we are ready for stream send and receive

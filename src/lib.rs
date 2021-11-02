@@ -102,10 +102,6 @@ impl QuicListener {
                 let conn_id = ring::hmac::sign(&conn_id_seed, &header.dcid);
                 let conn_id = &conn_id.as_ref()[..quiche::MAX_CONN_ID_LEN];
 
-                if header.ty != quiche::Type::Initial {
-                    continue 'read;
-                }
-
                 // version negotiation
                 if !quiche::version_is_supported(header.version) {
                     let len =

@@ -175,9 +175,23 @@ impl QuicListener {
                     let scid = header.dcid.clone();
 
                     // new connection
-                    let conn = quiche::accept(&scid, odcid.as_ref(), from, &mut config).unwrap();
+                    let mut conn = quiche::accept(&scid, odcid.as_ref(), from, &mut config).unwrap();
+                    loop {
+                        let (write, _) = match conn.send(&mut out) {
+                            Ok(v) => v,
+                            Err(quiche::Error::Done) => {
+                                break;
+                            }
+                            Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+                        };
+                        if let Err(e) = self.socket.send_to(&mut out[..write], &from) {
+                            if e.kind() == std::io::ErrorKind::WouldBlock {
+                                break;
+                            }
+                            panic!("send() failed: {:?}", e);
+                        }
+                    }
                     self.connection = Some(conn);
-                    continue 'read;
                 } else {
                     // connection already exists
                     let mut conn = self.connection.take().unwrap();

@@ -228,10 +228,8 @@ impl QuicListener {
         config
             .set_application_protos(b"\x0ahq-interop\x05hq-29\x05hq-28\x05hq-27\x08http/0.9")
             .unwrap();
-        let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
         let poll = mio::Poll::new().unwrap();
         let mut events = mio::Events::with_capacity(1024);
-        let mut conn = quiche::connect(None, &scid, addr, &mut config).unwrap();
         poll.register(
             &self.socket,
             mio::Token(0),
@@ -241,15 +239,31 @@ impl QuicListener {
         .unwrap();
         let mut buf = [0; 65535];
         let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
-        let (write, send_info) = conn.send(&mut out).expect("initial send failed");
-        while let Err(e) = self.socket.send_to(&out[..write], &send_info.to) {
-            if e.kind() == std::io::ErrorKind::WouldBlock {
-                continue;
+        let mut scid = [0; quiche::MAX_CONN_ID_LEN];
+        SystemRandom::new().fill(&mut scid[..]).unwrap();
+        let scid = quiche::ConnectionId::from_ref(&scid);
+        // generate connection
+        let mut conn = quiche::connect(None, &scid, addr, &mut config).unwrap();
+        // initiate handshake
+        loop {
+            let (write, send_info) = match conn.send(&mut out) {
+                Ok(v) => v,
+                Err(quiche::Error::Done) => {
+                    break;
+                }
+                Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+            };
+            if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    break;
+                }
+                panic!("send() failed: {:?}", e);
             }
-            panic!("send() failed: {:?}", e);
         }
         loop {
-            poll.poll(&mut events, conn.timeout()).unwrap();
+            let mut conn = self.connection.take().unwrap();
+            poll.poll(&mut events, None).unwrap();
+            // Read incoming UDP packets from the socket and process them
             'read: loop {
                 if events.is_empty() {
                     break 'read;
@@ -265,6 +279,7 @@ impl QuicListener {
                     }
                 };
                 let recv_info = quiche::RecvInfo { from };
+                // Process potentially coalesced packets
                 let read = match conn.recv(&mut buf[..len], recv_info) {
                     Ok(v) => v,
                     Err(_) => {
@@ -272,48 +287,29 @@ impl QuicListener {
                     }
                 };
                 let packet = &mut buf[..read];
+                // derive header from packet
                 let header = match quiche::Header::from_slice(packet, quiche::MAX_CONN_ID_LEN) {
                     Ok(v) => v,
                     Err(_) => {
                         continue 'read;
                     }
                 };
+                // If we got a retry packet then respond with token that was sent
                 if header.ty == quiche::Type::Retry {
-                    let mut write = None;
+                    let token = header.token.unwrap();
                     loop {
-                        match conn.send(&mut out) {
-                            Ok((len, _)) => write = Some(len),
-                            Err(quiche::Error::Done) => {
-                                break;
-                            }
-                            Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
-                        };
-                    }
-                    let mut initial_with_retry =
-                        [&out[..write.unwrap()], &header.token.unwrap()[..]].concat();
-                    if let Err(e) = self.socket.send_to(&mut initial_with_retry[..], &from) {
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            break;
-                        }
-                        panic!("send() failed: {:?}", e);
-                    }
-                } else {
-                    let recv_info = quiche::RecvInfo { from };
-                    match conn.recv(packet, recv_info) {
-                        Ok(v) => v,
-                        Err(_) => {
-                            continue 'read;
-                        }
-                    };
-                    loop {
-                        let (write, _) = match conn.send(&mut out) {
+                        let (write, send_info) = match conn.send(&mut out) {
                             Ok(v) => v,
                             Err(quiche::Error::Done) => {
                                 break;
                             }
                             Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
                         };
-                        if let Err(e) = self.socket.send_to(&mut out[..write], &from) {
+                        let mut initial_with_retry = [&out[..write], &token[..]].concat();
+                        if let Err(e) = self
+                            .socket
+                            .send_to(&mut initial_with_retry[..], &send_info.to)
+                        {
                             if e.kind() == std::io::ErrorKind::WouldBlock {
                                 break;
                             }
@@ -321,12 +317,29 @@ impl QuicListener {
                         }
                     }
                 }
-
-                if conn.is_established() {
-                    self.connection = Some(conn);
-                    return Ok(());
+            }
+            // Generate outgoing QUIC packets
+            loop {
+                let (write, send_info) = match conn.send(&mut out) {
+                    Ok(v) => v,
+                    Err(quiche::Error::Done) => {
+                        break;
+                    }
+                    Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+                };
+                if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
+                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                        break;
+                    }
+                    panic!("send() failed: {:?}", e);
                 }
             }
+            // if handshake is complete then connecting is finished
+            if conn.is_established() {
+                self.connection = Some(conn);
+                return Ok(());
+            }
+            self.connection = Some(conn);
         }
     }
 

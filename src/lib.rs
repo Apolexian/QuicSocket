@@ -33,21 +33,6 @@ impl QuicListener {
         })
     }
 
-    pub fn recv_from(&self) -> Result<(usize, SocketAddr), io::Error> {
-        let mut buf = [0; 65535];
-        loop {
-            match self.socket.recv_from(&mut buf) {
-                Ok((len, from)) => return Ok((len, from)),
-                Err(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WouldBlock,
-                        "recv would block",
-                    ))
-                }
-            };
-        }
-    }
-
     pub fn accept(&mut self) -> Result<(), io::Error> {
         // initialise needed buffers
         let mut buf = [0; 65535];
@@ -260,6 +245,7 @@ impl QuicListener {
                 panic!("send() failed: {:?}", e);
             }
         }
+        self.connection = Some(conn);
         loop {
             let mut conn = self.connection.take().unwrap();
             poll.poll(&mut events, None).unwrap();

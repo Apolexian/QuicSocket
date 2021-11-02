@@ -168,8 +168,17 @@ impl QuicListener {
                     self.connection = Some(conn);
                     return Ok(());
                 } else {
-                    let (write, _) = conn.send(&mut out).expect("initial send failed");
-                    if let Err(e) = self.socket.send_to(&mut out[..write], &from) {
+                    let mut write = None;
+                    loop {
+                        match conn.send(&mut out) {
+                            Ok((len, _)) => write = Some(len),
+                            Err(quiche::Error::Done) => {
+                                break;
+                            }
+                            Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+                        };
+                    }
+                    if let Err(e) = self.socket.send_to(&mut out[..write.unwrap()], &from) {
                         if e.kind() == std::io::ErrorKind::WouldBlock {
                             break;
                         }
@@ -245,14 +254,22 @@ impl QuicListener {
                     }
                 };
                 if header.ty == quiche::Type::Retry {
-                    let (write, _) = conn.send(&mut out).expect("initial send failed");
+                    let mut write = None;
+                    loop {
+                        match conn.send(&mut out) {
+                            Ok((len, _)) => write = Some(len),
+                            Err(quiche::Error::Done) => {
+                                break;
+                            }
+                            Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+                        };
+                    }
                     let mut initial_with_retry =
-                        [&out[..write], &header.token.unwrap()[..]].concat();
+                        [&out[..write.unwrap()], &header.token.unwrap()[..]].concat();
                     if let Err(e) = self.socket.send_to(&mut initial_with_retry[..], &from) {
                         if e.kind() == std::io::ErrorKind::WouldBlock {
                             break;
                         }
-
                         panic!("send() failed: {:?}", e);
                     }
                     continue 'read;

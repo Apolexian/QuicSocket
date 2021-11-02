@@ -177,6 +177,7 @@ impl QuicListener {
                     // new connection
                     let conn = quiche::accept(&scid, odcid.as_ref(), from, &mut config).unwrap();
                     self.connection = Some(conn);
+                    continue 'read;
                 } else {
                     // connection already exists
                     let mut conn = self.connection.take().unwrap();

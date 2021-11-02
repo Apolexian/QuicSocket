@@ -164,6 +164,16 @@ impl QuicListener {
                     let conn = quiche::accept(&scid, odcid.as_ref(), from, &mut config).unwrap();
                     self.connection = Some(conn);
                 }
+                // Process potentially coalesced packets
+                let mut conn = self.connection.take().unwrap();
+                let recv_info = quiche::RecvInfo { from };
+                let _ = match conn.recv(packet, recv_info) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        continue 'read;
+                    }
+                };
+                self.connection = Some(conn);
             }
             // Generate outgoing QUIC packets for connection
             if self.connection.is_none() {

@@ -281,6 +281,13 @@ impl QuicListener {
                     }
                     continue 'read;
                 } else {
+                    let recv_info = quiche::RecvInfo { from };
+                    match conn.recv(packet, recv_info) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            continue 'read;
+                        }
+                    };
                     let mut write = None;
                     loop {
                         match conn.send(&mut out) {

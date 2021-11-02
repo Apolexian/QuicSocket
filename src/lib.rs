@@ -168,7 +168,6 @@ impl QuicListener {
                     self.connection = Some(conn);
                     return Ok(());
                 } else {
-                    let mut write = None;
                     let recv_info = quiche::RecvInfo { from };
                     match conn.recv(packet, recv_info) {
                         Ok(v) => v,
@@ -177,19 +176,19 @@ impl QuicListener {
                         }
                     };
                     loop {
-                        match conn.send(&mut out) {
-                            Ok((len, _)) => write = Some(len),
+                        let (write, _) = match conn.send(&mut out) {
+                            Ok(v) => v,
                             Err(quiche::Error::Done) => {
                                 break;
                             }
                             Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
                         };
-                    }
-                    if let Err(e) = self.socket.send_to(&mut out[..write.unwrap()], &from) {
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            break;
+                        if let Err(e) = self.socket.send_to(&mut out[..write], &from) {
+                            if e.kind() == std::io::ErrorKind::WouldBlock {
+                                break;
+                            }
+                            panic!("send() failed: {:?}", e);
                         }
-                        panic!("send() failed: {:?}", e);
                     }
                 }
             }

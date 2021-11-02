@@ -49,6 +49,10 @@ impl QuicListener {
     }
 
     pub fn accept(&mut self) -> Result<(), io::Error> {
+        // initialise needed buffers
+        let mut buf = [0; 65535];
+        let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
+        // get quiche config
         let mut config = match self.default_quiche_config() {
             Ok(conf) => conf,
             Err(_) => {
@@ -58,17 +62,17 @@ impl QuicListener {
                 ))
             }
         };
+        // for server config, load crt and key
         config.load_cert_chain_from_pem_file("cert.crt").unwrap();
         config.load_priv_key_from_pem_file("cert.key").unwrap();
 
         config
             .set_application_protos(b"\x0ahq-interop\x05hq-29\x05hq-28\x05hq-27\x08http/0.9")
             .unwrap();
+        // set up event loop
         let poll = mio::Poll::new().unwrap();
         let mut events = mio::Events::with_capacity(1024);
-        let mut buf = [0; 65535];
-        let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
-        let rng = SystemRandom::new();
+        // register socket with the event loop
         poll.register(
             &self.socket,
             mio::Token(0),
@@ -76,9 +80,14 @@ impl QuicListener {
             mio::PollOpt::edge(),
         )
         .unwrap();
+
+        // create a seed to generate connection id
+        let rng = SystemRandom::new();
         let conn_id_seed = ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
+
         loop {
             poll.poll(&mut events, None).unwrap();
+            // read incoming UDP packets from the socket and process them
             'read: loop {
                 if events.is_empty() {
                     break 'read;
@@ -93,16 +102,19 @@ impl QuicListener {
                     }
                 };
                 let packet = &mut buf[..len];
+                // parse the QUIC header from the received packet
                 let header = match quiche::Header::from_slice(packet, quiche::MAX_CONN_ID_LEN) {
                     Ok(v) => v,
                     Err(_) => {
                         continue 'read;
                     }
                 };
+
+                // generate a connection id from seed
                 let conn_id = ring::hmac::sign(&conn_id_seed, &header.dcid);
                 let conn_id = &conn_id.as_ref()[..quiche::MAX_CONN_ID_LEN];
 
-                // version negotiation
+                // version negotiation if version is not supported by the server
                 if !quiche::version_is_supported(header.version) {
                     let len =
                         quiche::negotiate_version(&header.scid, &header.dcid, &mut out).unwrap();
@@ -117,73 +129,84 @@ impl QuicListener {
                     }
                     continue 'read;
                 }
+                // reuse the connection is as a source id
                 let mut scid = [0; quiche::MAX_CONN_ID_LEN];
                 scid.copy_from_slice(&conn_id);
                 let scid = quiche::ConnectionId::from_ref(&scid);
-                let token = header.token.as_ref().unwrap();
+                // if there is no connection then we need to create a new one
+                if self.connection.is_none() {
+                    // token has to be present on initial packets
+                    let token = header.token.as_ref().unwrap();
 
-                // do a stateless retry if the client didn't send a token
-                if token.is_empty() {
-                    let new_token = mint_token(&header, &from);
+                    // do a stateless retry if the client didn't send a token
+                    if token.is_empty() {
+                        let new_token = mint_token(&header, &from);
 
-                    let len = quiche::retry(
-                        &header.scid,
-                        &header.dcid,
-                        &scid,
-                        &new_token,
-                        header.version,
-                        &mut out,
-                    )
-                    .unwrap();
-                    let out = &out[..len];
-                    if let Err(e) = self.socket.send_to(out, &from) {
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            break;
-                        }
-
-                        panic!("send() failed: {:?}", e);
-                    }
-                    continue 'read;
-                }
-                let odcid = validate_token(&from, token);
-
-                if odcid.is_none() {
-                    continue 'read;
-                }
-
-                if scid.len() != header.dcid.len() {
-                    continue 'read;
-                }
-
-                // reuse the source connection id
-                let scid = header.dcid.clone();
-
-                // new connection
-                let mut conn = quiche::accept(&scid, odcid.as_ref(), from, &mut config).unwrap();
-                if conn.is_established() {
-                    self.connection = Some(conn);
-                    return Ok(());
-                } else {
-                    let recv_info = quiche::RecvInfo { from };
-                    match conn.recv(packet, recv_info) {
-                        Ok(v) => v,
-                        Err(_) => {
-                            continue 'read;
-                        }
-                    };
-                    loop {
-                        let (write, _) = match conn.send(&mut out) {
-                            Ok(v) => v,
-                            Err(quiche::Error::Done) => {
-                                break;
-                            }
-                            Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
-                        };
-                        if let Err(e) = self.socket.send_to(&mut out[..write], &from) {
+                        let len = quiche::retry(
+                            &header.scid,
+                            &header.dcid,
+                            &scid,
+                            &new_token,
+                            header.version,
+                            &mut out,
+                        )
+                        .unwrap();
+                        let out = &out[..len];
+                        if let Err(e) = self.socket.send_to(out, &from) {
                             if e.kind() == std::io::ErrorKind::WouldBlock {
                                 break;
                             }
+
                             panic!("send() failed: {:?}", e);
+                        }
+                        continue 'read;
+                    }
+                    let odcid = validate_token(&from, token);
+
+                    if odcid.is_none() {
+                        continue 'read;
+                    }
+
+                    if scid.len() != header.dcid.len() {
+                        continue 'read;
+                    }
+
+                    // reuse the source connection id
+                    let scid = header.dcid.clone();
+
+                    // new connection
+                    let conn = quiche::accept(&scid, odcid.as_ref(), from, &mut config).unwrap();
+                    self.connection = Some(conn);
+                } else {
+                    // connection already exists
+                    let mut conn = self.connection.take().unwrap();
+                    // if handshake is complete then connection establishment is done
+                    if conn.is_established() {
+                        self.connection = Some(conn);
+                        return Ok(());
+                    } else {
+                        // otherwise we must continue handshake loop
+                        let recv_info = quiche::RecvInfo { from };
+                        match conn.recv(packet, recv_info) {
+                            Ok(v) => v,
+                            Err(_) => {
+                                continue 'read;
+                            }
+                        };
+                        loop {
+                            let (write, _) = match conn.send(&mut out) {
+                                Ok(v) => v,
+                                Err(quiche::Error::Done) => {
+                                    break;
+                                }
+                                Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+                            };
+                            if let Err(e) = self.socket.send_to(&mut out[..write], &from) {
+                                if e.kind() == std::io::ErrorKind::WouldBlock {
+                                    break;
+                                }
+                                panic!("send() failed: {:?}", e);
+                            }
                         }
                     }
                 }

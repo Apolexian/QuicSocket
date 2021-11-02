@@ -281,8 +281,17 @@ impl QuicListener {
                     }
                     continue 'read;
                 } else {
-                    let (write, _) = conn.send(&mut out).expect("initial send failed");
-                    if let Err(e) = self.socket.send_to(&mut out[..write], &from) {
+                    let mut write = None;
+                    loop {
+                        match conn.send(&mut out) {
+                            Ok((len, _)) => write = Some(len),
+                            Err(quiche::Error::Done) => {
+                                break;
+                            }
+                            Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+                        };
+                    }
+                    if let Err(e) = self.socket.send_to(&mut out[..write.unwrap()], &from) {
                         if e.kind() == std::io::ErrorKind::WouldBlock {
                             break;
                         }

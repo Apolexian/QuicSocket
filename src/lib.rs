@@ -175,24 +175,23 @@ impl QuicListener {
             if conn.is_established() {
                 self.connection = Some(conn);
                 return Ok(());
-            } else {
-                loop {
-                    let (write, send_info) = match conn.send(&mut out) {
-                        Ok(v) => v,
-                        Err(quiche::Error::Done) => {
-                            break;
-                        }
-                        Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
-                    };
-                    if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            break;
-                        }
-                        panic!("send() failed: {:?}", e);
-                    }
-                }
-                self.connection = Some(conn);
             }
+            loop {
+                let (write, send_info) = match conn.send(&mut out) {
+                    Ok(v) => v,
+                    Err(quiche::Error::Done) => {
+                        break;
+                    }
+                    Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+                };
+                if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
+                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                        break;
+                    }
+                    panic!("send() failed: {:?}", e);
+                }
+            }
+            self.connection = Some(conn);
         }
     }
 

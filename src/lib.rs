@@ -436,7 +436,7 @@ impl QuicListener {
                 }
                 Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
             };
-            if let Err(e) = self.socket.send_to(&mut payload[..write], &send_info.to) {
+            if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
                     break;
                 }
@@ -479,7 +479,7 @@ impl QuicListener {
                     }
                     Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
                 };
-                if let Err(e) = self.socket.send_to(&mut payload[..write], &send_info.to) {
+                if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
                     if e.kind() == std::io::ErrorKind::WouldBlock {
                         break;
                     }

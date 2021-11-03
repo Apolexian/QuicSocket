@@ -329,8 +329,31 @@ impl QuicListener {
     pub fn stream_recv(&mut self, stream_id: u64, out: &mut [u8]) -> io::Result<usize> {
         let mut buf = [0; 65535];
         // set up event loop
+        let mut conn = self.connection.take().unwrap();
         let mut events = mio::Events::with_capacity(1024);
         let mut len_stream = None;
+        loop {
+            let (len, from) = match self.socket.recv_from(&mut buf) {
+                Ok(v) => v,
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                        self.connection = Some(conn);
+                        break;
+                    }
+                    panic!("recv() failed: {:?}", e);
+                }
+            };
+            let packet = &mut buf[..len];
+
+            // Process potentially coalesced packets
+            let recv_info = quiche::RecvInfo { from };
+            let _ = match conn.recv(packet, recv_info) {
+                Ok(v) => v,
+                Err(_) => {
+                    continue;
+                }
+            };
+        }
         loop {
             let mut conn = self.connection.take().unwrap();
             let mut done = None;

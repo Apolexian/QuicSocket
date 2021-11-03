@@ -4,6 +4,7 @@ use std::io;
 use std::net;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::time::Duration;
 
 pub const DEFAULT_MAX_DATAGRAM_SIZE: usize = 1350;
 const DEFAULT_MAX_IDLE_TIMEOUT: u64 = 5000;
@@ -447,8 +448,9 @@ impl QuicListener {
                 panic!("send() failed: {:?}", e);
             }
         }
+        let five_seconds = Duration::new(5, 0);
         loop {
-            self.poll.poll(&mut events, None).unwrap();
+            self.poll.poll(&mut events, Some(five_seconds)).unwrap();
             'read: loop {
                 if events.is_empty() {
                     break 'read;
@@ -473,22 +475,6 @@ impl QuicListener {
                         continue 'read;
                     }
                 };
-            }
-            loop {
-                let (write, send_info) = match conn.send(&mut out) {
-                    Ok(v) => v,
-                    Err(quiche::Error::Done) => {
-                        self.poll.deregister(&self.socket).unwrap();
-                        return Ok(());
-                    }
-                    Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
-                };
-                if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
-                        break;
-                    }
-                    panic!("send() failed: {:?}", e);
-                }
             }
         }
     }

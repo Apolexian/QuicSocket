@@ -19,7 +19,6 @@ const DEFAULT_INITIAL_MAX_STREAMS_UNI: u64 = 100;
 pub struct QuicListener {
     pub socket: mio::net::UdpSocket,
     pub connection: Option<Pin<Box<quiche::Connection>>>,
-    pub is_server: bool,
 }
 
 impl QuicListener {
@@ -29,7 +28,6 @@ impl QuicListener {
         Ok(QuicListener {
             socket,
             connection: None,
-            is_server: false,
         })
     }
 
@@ -335,18 +333,139 @@ impl QuicListener {
         }
     }
 
-    pub fn stream_recv(&mut self, stream_id: u64, out: &mut [u8]) -> io::Result<(usize, bool)> {
+    pub fn stream_recv(&mut self, stream_id: u64, out: &mut [u8]) -> io::Result<usize> {
+        let mut buf = [0; 65535];
+        // set up event loop
+        let poll = mio::Poll::new().unwrap();
+        let mut events = mio::Events::with_capacity(1024);
+        // register socket with the event loop
+        poll.register(
+            &self.socket,
+            mio::Token(0),
+            mio::Ready::readable(),
+            mio::PollOpt::edge(),
+        )
+        .unwrap();
+        poll.poll(&mut events, None).unwrap();
         let mut conn = self.connection.take().unwrap();
-        while let Ok((read, fin)) = conn.stream_recv(stream_id, out) {
-            if fin {
-                self.connection = Some(conn);
-                return Ok((read, fin));
+        let mut len_stream = None;
+        loop {
+            let mut done = None;
+            poll.poll(&mut events, None).unwrap();
+            'read: loop {
+                if events.is_empty() {
+                    break 'read;
+                }
+                let (len, from) = match self.socket.recv_from(&mut buf) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            break 'read;
+                        }
+                        panic!("recv() failed: {:?}", e);
+                    }
+                };
+                let packet = &mut buf[..len];
+
+                // Process potentially coalesced packets
+                let mut conn = self.connection.take().unwrap();
+                let recv_info = quiche::RecvInfo { from };
+                let _ = match conn.recv(packet, recv_info) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        continue 'read;
+                    }
+                };
+                while let Ok((read, fin)) = conn.stream_recv(stream_id, out) {
+                    if fin {
+                        len_stream = Some(read);
+                        done = Some(fin);
+                        self.connection = Some(conn);
+                        break 'read;
+                    }
+                }
+            }
+            loop {
+                let (write, send_info) = match conn.send(out) {
+                    Ok(v) => v,
+                    Err(quiche::Error::Done) => {
+                        break;
+                    }
+                    Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+                };
+                if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
+                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                        break;
+                    }
+                    panic!("send() failed: {:?}", e);
+                }
+            }
+            if done.unwrap() == true {
+                return Ok(len_stream.unwrap());
             }
         }
-        self.connection = Some(conn);
-        Ok((0, false))
     }
 
+    pub fn stream_send(&mut self, stream_id: u64, payload: &mut [u8]) -> io::Result<()> {
+        let mut buf = [0; 65535];
+        // set up event loop
+        let poll = mio::Poll::new().unwrap();
+        let mut events = mio::Events::with_capacity(1024);
+        // register socket with the event loop
+        poll.register(
+            &self.socket,
+            mio::Token(0),
+            mio::Ready::readable(),
+            mio::PollOpt::edge(),
+        )
+        .unwrap();
+        poll.poll(&mut events, None).unwrap();
+        let mut conn = self.connection.take().unwrap();
+        loop {
+            poll.poll(&mut events, None).unwrap();
+            'read: loop {
+                if events.is_empty() {
+                    break 'read;
+                }
+                let (len, from) = match self.socket.recv_from(&mut buf) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            break 'read;
+                        }
+                        panic!("recv() failed: {:?}", e);
+                    }
+                };
+                let packet = &mut buf[..len];
+
+                // Process potentially coalesced packets
+                let mut conn = self.connection.take().unwrap();
+                let recv_info = quiche::RecvInfo { from };
+                let _ = match conn.recv(packet, recv_info) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        continue 'read;
+                    }
+                };
+            }
+            loop {
+                conn.stream_send(stream_id, payload, true).unwrap();
+                let (write, send_info) = match conn.send(payload) {
+                    Ok(v) => v,
+                    Err(quiche::Error::Done) => {
+                        return Ok(());
+                    }
+                    Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+                };
+                if let Err(e) = self.socket.send_to(&mut payload[..write], &send_info.to) {
+                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                        break;
+                    }
+                    panic!("send() failed: {:?}", e);
+                }
+            }
+        }
+    }
     fn default_quiche_config(&self) -> Result<quiche::Config, io::Error> {
         let mut quiche_config = match quiche::Config::new(quiche::PROTOCOL_VERSION) {
             Ok(v) => v,

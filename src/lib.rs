@@ -20,7 +20,6 @@ pub struct QuicListener {
     pub socket: mio::net::UdpSocket,
     pub connection: Option<Pin<Box<quiche::Connection>>>,
     poll: mio::Poll,
-    poll_events: mio::Events,
 }
 
 impl QuicListener {
@@ -28,7 +27,6 @@ impl QuicListener {
         let socket = net::UdpSocket::bind(addr).unwrap();
         let socket = mio::net::UdpSocket::from_socket(socket).unwrap();
         let poll = mio::Poll::new().unwrap();
-        let poll_events = mio::Events::with_capacity(1024);
         poll.register(
             &socket,
             mio::Token(0),
@@ -40,7 +38,6 @@ impl QuicListener {
             socket,
             connection: None,
             poll,
-            poll_events,
         })
     }
 
@@ -66,16 +63,17 @@ impl QuicListener {
             .set_application_protos(b"\x0ahq-interop\x05hq-29\x05hq-28\x05hq-27\x08http/0.9")
             .unwrap();
         // set up event loop
+        let mut events = mio::Events::with_capacity(1024);
 
         // create a seed to generate connection id
         let rng = SystemRandom::new();
         let conn_id_seed = ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
 
         loop {
-            self.poll.poll(&mut self.poll_events, None).unwrap();
+            self.poll.poll(&mut events, None).unwrap();
             // read incoming UDP packets from the socket and process them
             'read: loop {
-                if self.poll_events.is_empty() {
+                if events.is_empty() {
                     break 'read;
                 }
                 let (len, from) = match self.socket.recv_from(&mut buf) {
@@ -220,6 +218,7 @@ impl QuicListener {
         config
             .set_application_protos(b"\x0ahq-interop\x05hq-29\x05hq-28\x05hq-27\x08http/0.9")
             .unwrap();
+        let mut events = mio::Events::with_capacity(1024);
         let mut buf = [0; 65535];
         let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
         let mut scid = [0; quiche::MAX_CONN_ID_LEN];
@@ -246,10 +245,10 @@ impl QuicListener {
         self.connection = Some(conn);
         loop {
             let mut conn = self.connection.take().unwrap();
-            self.poll.poll(&mut self.poll_events, None).unwrap();
+            self.poll.poll(&mut events, None).unwrap();
             // Read incoming UDP packets from the socket and process them
             'read: loop {
-                if self.poll_events.is_empty() {
+                if events.is_empty() {
                     break 'read;
                 }
 
@@ -329,80 +328,86 @@ impl QuicListener {
 
     pub fn stream_recv(&mut self, stream_id: u64, out: &mut [u8]) -> io::Result<usize> {
         let mut buf = [0; 65535];
+        // set up event loop
+        let mut events = mio::Events::with_capacity(1024);
         let mut len_stream = None;
-        let mut conn = self.connection.take().unwrap();
         loop {
-            self.poll.poll(&mut self.poll_events, None).unwrap();
-            if self.poll_events.is_empty() {
-                break;
+            let mut conn = self.connection.take().unwrap();
+            let mut done = None;
+            self.poll.poll(&mut events, None).unwrap();
+            'read: loop {
+                if events.is_empty() {
+                    self.connection = Some(conn);
+                    break 'read;
+                }
+                let (len, from) = match self.socket.recv_from(&mut buf) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            self.connection = Some(conn);
+                            break 'read;
+                        }
+                        panic!("recv() failed: {:?}", e);
+                    }
+                };
+                let packet = &mut buf[..len];
+
+                // Process potentially coalesced packets
+                let recv_info = quiche::RecvInfo { from };
+                let _ = match conn.recv(packet, recv_info) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        continue 'read;
+                    }
+                };
+                while let Ok((read, fin)) = conn.stream_recv(stream_id, out) {
+                    if fin {
+                        len_stream = Some(read);
+                        done = Some(fin);
+                        self.connection = Some(conn);
+                        break 'read;
+                    }
+                }
             }
-            // read on socket
-            let (len, from) = match self.socket.recv_from(&mut buf) {
-                Ok(v) => v,
-                Err(e) => {
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
+            let mut conn = self.connection.take().unwrap();
+            loop {
+                let (write, send_info) = match conn.send(out) {
+                    Ok(v) => v,
+                    Err(quiche::Error::Done) => {
+                        self.connection = Some(conn);
                         break;
                     }
-                    panic!("recv() failed: {:?}", e);
-                }
-            };
-            let packet = &mut buf[..len];
-
-            // Process potentially coalesced packets
-            let recv_info = quiche::RecvInfo { from };
-            let _ = match conn.recv(packet, recv_info) {
-                Ok(v) => v,
-                Err(_) => {
-                    continue;
-                }
-            };
-            // receive on stream
-            while let Ok((read, fin)) = conn.stream_recv(stream_id, out) {
-                if fin {
-                    len_stream = Some(read);
-                    break;
+                    Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+                };
+                if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
+                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                        self.connection = Some(conn);
+                        break;
+                    }
+                    panic!("send() failed: {:?}", e);
                 }
             }
-        }
-        loop {
-            // send response
-            let (write, send_info) = match conn.send(out) {
-                Ok(v) => v,
-                Err(quiche::Error::Done) => {
-                    break;
-                }
-                Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
-            };
-            if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    break;
-                }
-                panic!("send() failed: {:?}", e);
+            if done.unwrap() == true {
+                return Ok(len_stream.unwrap());
             }
         }
-        self.connection = Some(conn);
-        return Ok(len_stream.unwrap());
     }
 
     pub fn stream_send(&mut self, stream_id: u64, payload: &mut [u8]) -> io::Result<()> {
         let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
+        // set up event loop
         let mut conn = self.connection.take().unwrap();
-        if conn.is_established() {
-            conn.stream_send(stream_id, payload, true).unwrap();
-        }
-
+        conn.stream_send(stream_id, payload, true).unwrap();
         loop {
             let (write, send_info) = match conn.send(&mut out) {
                 Ok(v) => v,
                 Err(quiche::Error::Done) => {
-                    self.connection = Some(conn);
                     return Ok(());
                 }
                 Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
             };
             if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
-                    self.connection = Some(conn);
                     return Ok(());
                 }
                 panic!("send() failed: {:?}", e);

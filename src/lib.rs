@@ -351,7 +351,6 @@ impl QuicListener {
                 mio::PollOpt::edge(),
             )
             .unwrap();
-        self.poll.poll(&mut events, None).unwrap();
         let mut conn = self.connection.take().unwrap();
         let mut len_stream = None;
         loop {
@@ -425,7 +424,6 @@ impl QuicListener {
                 mio::PollOpt::edge(),
             )
             .unwrap();
-        self.poll.poll(&mut events, None).unwrap();
         let mut conn = self.connection.take().unwrap();
         conn.stream_send(stream_id, payload, true).unwrap();
         loop {

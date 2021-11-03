@@ -336,7 +336,7 @@ impl QuicListener {
                 Ok(v) => v,
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::WouldBlock {
-                        break;
+                        continue;
                     }
                     panic!("recv() failed: {:?}", e);
                 }

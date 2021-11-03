@@ -417,6 +417,7 @@ impl QuicListener {
             let (write, send_info) = match conn.send(&mut out) {
                 Ok(v) => v,
                 Err(quiche::Error::Done) => {
+                    self.connection = Some(conn);
                     return Ok(());
                 }
                 Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),

@@ -397,6 +397,21 @@ impl QuicListener {
         let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
         // set up event loop
         let mut conn = self.connection.take().unwrap();
+        loop {
+            let (write, send_info) = match conn.send(&mut out) {
+                Ok(v) => v,
+                Err(quiche::Error::Done) => {
+                    break;
+                }
+                Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+            };
+            if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    break;
+                }
+                panic!("send() failed: {:?}", e);
+            }
+        }
         conn.stream_send(stream_id, payload, true).unwrap();
         loop {
             let (write, send_info) = match conn.send(&mut out) {

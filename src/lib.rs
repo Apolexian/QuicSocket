@@ -430,6 +430,7 @@ impl QuicListener {
             )
             .unwrap();
         let mut conn = self.connection.take().unwrap();
+        conn.stream_send(stream_id, payload, true).unwrap();
         loop {
             let (write, send_info) = match conn.send(&mut out) {
                 Ok(v) => v,
@@ -446,7 +447,6 @@ impl QuicListener {
                 panic!("send() failed: {:?}", e);
             }
         }
-        conn.stream_send(stream_id, payload, true).unwrap();
         loop {
             self.poll.poll(&mut events, None).unwrap();
             'read: loop {

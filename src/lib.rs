@@ -329,11 +329,14 @@ impl QuicListener {
 
     pub fn stream_recv(&mut self, stream_id: u64, out: &mut [u8]) -> io::Result<usize> {
         let mut buf = [0; 65535];
-        // set up event loop
         let mut len_stream = None;
         let mut conn = self.connection.take().unwrap();
         loop {
             self.poll.poll(&mut self.poll_events, None).unwrap();
+            if self.poll_events.is_empty() {
+                break;
+            }
+            // read on socket
             let (len, from) = match self.socket.recv_from(&mut buf) {
                 Ok(v) => v,
                 Err(e) => {
@@ -343,12 +346,6 @@ impl QuicListener {
                     panic!("recv() failed: {:?}", e);
                 }
             };
-            while let Ok((read, fin)) = conn.stream_recv(stream_id, out) {
-                if fin {
-                    len_stream = Some(read);
-                    break;
-                }
-            }
             let packet = &mut buf[..len];
 
             // Process potentially coalesced packets
@@ -359,8 +356,16 @@ impl QuicListener {
                     continue;
                 }
             };
+            // receive on stream
+            while let Ok((read, fin)) = conn.stream_recv(stream_id, out) {
+                if fin {
+                    len_stream = Some(read);
+                    break;
+                }
+            }
         }
         loop {
+            // send response
             let (write, send_info) = match conn.send(out) {
                 Ok(v) => v,
                 Err(quiche::Error::Done) => {
@@ -381,24 +386,11 @@ impl QuicListener {
 
     pub fn stream_send(&mut self, stream_id: u64, payload: &mut [u8]) -> io::Result<()> {
         let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
-        // set up event loop
         let mut conn = self.connection.take().unwrap();
-        loop {
-            let (write, send_info) = match conn.send(&mut out) {
-                Ok(v) => v,
-                Err(quiche::Error::Done) => {
-                    break;
-                }
-                Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
-            };
-            if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    break;
-                }
-                panic!("send() failed: {:?}", e);
-            }
+        if conn.is_established() {
+            conn.stream_send(stream_id, payload, true).unwrap();
         }
-        conn.stream_send(stream_id, payload, true).unwrap();
+
         loop {
             let (write, send_info) = match conn.send(&mut out) {
                 Ok(v) => v,

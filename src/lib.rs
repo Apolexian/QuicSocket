@@ -427,6 +427,24 @@ impl QuicListener {
             .unwrap();
         self.poll.poll(&mut events, None).unwrap();
         let mut conn = self.connection.take().unwrap();
+        conn.stream_send(stream_id, payload, true).unwrap();
+        loop {
+            conn.stream_send(stream_id, payload, true).unwrap();
+            let (write, send_info) = match conn.send(payload) {
+                Ok(v) => v,
+                Err(quiche::Error::Done) => {
+                    self.poll.deregister(&self.socket).unwrap();
+                    break;
+                }
+                Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+            };
+            if let Err(e) = self.socket.send_to(&mut payload[..write], &send_info.to) {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    break;
+                }
+                panic!("send() failed: {:?}", e);
+            }
+        }
         loop {
             self.poll.poll(&mut events, None).unwrap();
             'read: loop {
@@ -455,7 +473,6 @@ impl QuicListener {
                 };
             }
             loop {
-                conn.stream_send(stream_id, payload, true).unwrap();
                 let (write, send_info) = match conn.send(payload) {
                     Ok(v) => v,
                     Err(quiche::Error::Done) => {

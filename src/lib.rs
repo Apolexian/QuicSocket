@@ -4,7 +4,6 @@ use std::io;
 use std::net;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::time::Duration;
 
 pub const DEFAULT_MAX_DATAGRAM_SIZE: usize = 1350;
 const DEFAULT_MAX_IDLE_TIMEOUT: u64 = 5000;
@@ -417,10 +416,8 @@ impl QuicListener {
     }
 
     pub fn stream_send(&mut self, stream_id: u64, payload: &mut [u8]) -> io::Result<()> {
-        let mut buf = [0; 65535];
         let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
         // set up event loop
-        let mut events = mio::Events::with_capacity(1024);
         // register socket with the event loop
         self.poll
             .register(
@@ -437,44 +434,15 @@ impl QuicListener {
                 Ok(v) => v,
                 Err(quiche::Error::Done) => {
                     self.poll.deregister(&self.socket).unwrap();
-                    break;
+                    return Ok(());
                 }
                 Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
             };
             if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
-                    break;
+                    return Ok(());
                 }
                 panic!("send() failed: {:?}", e);
-            }
-        }
-        let five_seconds = Duration::new(5, 0);
-        loop {
-            self.poll.poll(&mut events, Some(five_seconds)).unwrap();
-            'read: loop {
-                if events.is_empty() {
-                    break 'read;
-                }
-                let (len, from) = match self.socket.recv_from(&mut buf) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            break 'read;
-                        }
-                        panic!("recv() failed: {:?}", e);
-                    }
-                };
-                let packet = &mut buf[..len];
-
-                // Process potentially coalesced packets
-                let mut conn = self.connection.take().unwrap();
-                let recv_info = quiche::RecvInfo { from };
-                let _ = match conn.recv(packet, recv_info) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        continue 'read;
-                    }
-                };
             }
         }
     }

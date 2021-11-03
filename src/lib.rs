@@ -351,19 +351,21 @@ impl QuicListener {
                 mio::PollOpt::edge(),
             )
             .unwrap();
-        let mut conn = self.connection.take().unwrap();
         let mut len_stream = None;
         loop {
+            let mut conn = self.connection.take().unwrap();
             let mut done = None;
             self.poll.poll(&mut events, None).unwrap();
             'read: loop {
                 if events.is_empty() {
+                    self.connection = Some(conn);
                     break 'read;
                 }
                 let (len, from) = match self.socket.recv_from(&mut buf) {
                     Ok(v) => v,
                     Err(e) => {
                         if e.kind() == std::io::ErrorKind::WouldBlock {
+                            self.connection = Some(conn);
                             break 'read;
                         }
                         panic!("recv() failed: {:?}", e);
@@ -372,7 +374,6 @@ impl QuicListener {
                 let packet = &mut buf[..len];
 
                 // Process potentially coalesced packets
-                let mut conn = self.connection.take().unwrap();
                 let recv_info = quiche::RecvInfo { from };
                 let _ = match conn.recv(packet, recv_info) {
                     Ok(v) => v,
@@ -389,16 +390,19 @@ impl QuicListener {
                     }
                 }
             }
+            let mut conn = self.connection.take().unwrap();
             loop {
                 let (write, send_info) = match conn.send(out) {
                     Ok(v) => v,
                     Err(quiche::Error::Done) => {
+                        self.connection = Some(conn);
                         break;
                     }
                     Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
                 };
                 if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
                     if e.kind() == std::io::ErrorKind::WouldBlock {
+                        self.connection = Some(conn);
                         break;
                     }
                     panic!("send() failed: {:?}", e);

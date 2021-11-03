@@ -415,20 +415,20 @@ impl QuicListener {
     pub fn stream_send(&mut self, stream_id: u64, payload: &mut [u8]) -> io::Result<()> {
         let mut buf = [0; 65535];
         // set up event loop
-        let poll = mio::Poll::new().unwrap();
         let mut events = mio::Events::with_capacity(1024);
         // register socket with the event loop
-        poll.register(
-            &self.socket,
-            mio::Token(0),
-            mio::Ready::readable(),
-            mio::PollOpt::edge(),
-        )
-        .unwrap();
-        poll.poll(&mut events, None).unwrap();
+        self.poll
+            .register(
+                &self.socket,
+                mio::Token(0),
+                mio::Ready::readable(),
+                mio::PollOpt::edge(),
+            )
+            .unwrap();
+        self.poll.poll(&mut events, None).unwrap();
         let mut conn = self.connection.take().unwrap();
         loop {
-            poll.poll(&mut events, None).unwrap();
+            self.poll.poll(&mut events, None).unwrap();
             'read: loop {
                 if events.is_empty() {
                     break 'read;
@@ -459,7 +459,7 @@ impl QuicListener {
                 let (write, send_info) = match conn.send(payload) {
                     Ok(v) => v,
                     Err(quiche::Error::Done) => {
-                        poll.deregister(&self.socket).unwrap();
+                        self.poll.deregister(&self.socket).unwrap();
                         return Ok(());
                     }
                     Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),

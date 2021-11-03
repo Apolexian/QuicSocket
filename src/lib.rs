@@ -182,6 +182,7 @@ impl QuicListener {
             // then we can return as we are ready for stream send and receive
             if conn.is_established() {
                 self.connection = Some(conn);
+                poll.deregister(&self.socket).unwrap();
                 return Ok(());
             }
             loop {
@@ -327,6 +328,7 @@ impl QuicListener {
             // if handshake is complete then connecting is finished
             if conn.is_established() {
                 self.connection = Some(conn);
+                poll.deregister(&self.socket).unwrap();
                 return Ok(());
             }
             self.connection = Some(conn);
@@ -401,6 +403,7 @@ impl QuicListener {
                 }
             }
             if done.unwrap() == true {
+                poll.deregister(&self.socket).unwrap();
                 return Ok(len_stream.unwrap());
             }
         }
@@ -453,6 +456,7 @@ impl QuicListener {
                 let (write, send_info) = match conn.send(payload) {
                     Ok(v) => v,
                     Err(quiche::Error::Done) => {
+                        poll.deregister(&self.socket).unwrap();
                         return Ok(());
                     }
                     Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),

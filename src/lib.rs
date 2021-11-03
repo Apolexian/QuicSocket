@@ -19,15 +19,18 @@ const DEFAULT_INITIAL_MAX_STREAMS_UNI: u64 = 100;
 pub struct QuicListener {
     pub socket: mio::net::UdpSocket,
     pub connection: Option<Pin<Box<quiche::Connection>>>,
+    poll: mio::Poll,
 }
 
 impl QuicListener {
     pub fn new(addr: SocketAddr) -> io::Result<QuicListener> {
         let socket = net::UdpSocket::bind(addr).unwrap();
         let socket = mio::net::UdpSocket::from_socket(socket).unwrap();
+        let poll = mio::Poll::new().unwrap();
         Ok(QuicListener {
             socket,
             connection: None,
+            poll,
         })
     }
 
@@ -53,23 +56,23 @@ impl QuicListener {
             .set_application_protos(b"\x0ahq-interop\x05hq-29\x05hq-28\x05hq-27\x08http/0.9")
             .unwrap();
         // set up event loop
-        let poll = mio::Poll::new().unwrap();
         let mut events = mio::Events::with_capacity(1024);
         // register socket with the event loop
-        poll.register(
-            &self.socket,
-            mio::Token(0),
-            mio::Ready::readable(),
-            mio::PollOpt::edge(),
-        )
-        .unwrap();
+        self.poll
+            .register(
+                &self.socket,
+                mio::Token(0),
+                mio::Ready::readable(),
+                mio::PollOpt::edge(),
+            )
+            .unwrap();
 
         // create a seed to generate connection id
         let rng = SystemRandom::new();
         let conn_id_seed = ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
 
         loop {
-            poll.poll(&mut events, None).unwrap();
+            self.poll.poll(&mut events, None).unwrap();
             // read incoming UDP packets from the socket and process them
             'read: loop {
                 if events.is_empty() {
@@ -182,7 +185,7 @@ impl QuicListener {
             // then we can return as we are ready for stream send and receive
             if conn.is_established() {
                 self.connection = Some(conn);
-                poll.deregister(&self.socket).unwrap();
+                self.poll.deregister(&self.socket).unwrap();
                 return Ok(());
             }
             loop {
@@ -218,15 +221,15 @@ impl QuicListener {
         config
             .set_application_protos(b"\x0ahq-interop\x05hq-29\x05hq-28\x05hq-27\x08http/0.9")
             .unwrap();
-        let poll = mio::Poll::new().unwrap();
         let mut events = mio::Events::with_capacity(1024);
-        poll.register(
-            &self.socket,
-            mio::Token(0),
-            mio::Ready::readable(),
-            mio::PollOpt::edge(),
-        )
-        .unwrap();
+        self.poll
+            .register(
+                &self.socket,
+                mio::Token(0),
+                mio::Ready::readable(),
+                mio::PollOpt::edge(),
+            )
+            .unwrap();
         let mut buf = [0; 65535];
         let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
         let mut scid = [0; quiche::MAX_CONN_ID_LEN];
@@ -253,7 +256,7 @@ impl QuicListener {
         self.connection = Some(conn);
         loop {
             let mut conn = self.connection.take().unwrap();
-            poll.poll(&mut events, None).unwrap();
+            self.poll.poll(&mut events, None).unwrap();
             // Read incoming UDP packets from the socket and process them
             'read: loop {
                 if events.is_empty() {
@@ -328,7 +331,7 @@ impl QuicListener {
             // if handshake is complete then connecting is finished
             if conn.is_established() {
                 self.connection = Some(conn);
-                poll.deregister(&self.socket).unwrap();
+                self.poll.deregister(&self.socket).unwrap();
                 return Ok(());
             }
             self.connection = Some(conn);
@@ -338,22 +341,22 @@ impl QuicListener {
     pub fn stream_recv(&mut self, stream_id: u64, out: &mut [u8]) -> io::Result<usize> {
         let mut buf = [0; 65535];
         // set up event loop
-        let poll = mio::Poll::new().unwrap();
         let mut events = mio::Events::with_capacity(1024);
         // register socket with the event loop
-        poll.register(
-            &self.socket,
-            mio::Token(0),
-            mio::Ready::readable(),
-            mio::PollOpt::edge(),
-        )
-        .unwrap();
-        poll.poll(&mut events, None).unwrap();
+        self.poll
+            .register(
+                &self.socket,
+                mio::Token(0),
+                mio::Ready::readable(),
+                mio::PollOpt::edge(),
+            )
+            .unwrap();
+        self.poll.poll(&mut events, None).unwrap();
         let mut conn = self.connection.take().unwrap();
         let mut len_stream = None;
         loop {
             let mut done = None;
-            poll.poll(&mut events, None).unwrap();
+            self.poll.poll(&mut events, None).unwrap();
             'read: loop {
                 if events.is_empty() {
                     break 'read;
@@ -403,7 +406,7 @@ impl QuicListener {
                 }
             }
             if done.unwrap() == true {
-                poll.deregister(&self.socket).unwrap();
+                self.poll.deregister(&self.socket).unwrap();
                 return Ok(len_stream.unwrap());
             }
         }

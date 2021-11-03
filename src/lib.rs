@@ -416,19 +416,9 @@ impl QuicListener {
     }
 
     pub fn stream_send(&mut self, stream_id: u64, payload: &mut [u8]) -> io::Result<()> {
-        let mut buf = [0; 65535];
         let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
         // set up event loop
-        let mut events = mio::Events::with_capacity(1024);
         // register socket with the event loop
-        self.poll
-            .register(
-                &self.socket,
-                mio::Token(0),
-                mio::Ready::readable(),
-                mio::PollOpt::edge(),
-            )
-            .unwrap();
         let mut conn = self.connection.take().unwrap();
         conn.stream_send(stream_id, payload, true).unwrap();
         loop {
@@ -436,59 +426,15 @@ impl QuicListener {
                 Ok(v) => v,
                 Err(quiche::Error::Done) => {
                     self.poll.deregister(&self.socket).unwrap();
-                    break;
+                    return Ok(());
                 }
                 Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
             };
             if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
-                    break;
+                    return Err(io::Error::new(io::ErrorKind::Other, e));
                 }
                 panic!("send() failed: {:?}", e);
-            }
-        }
-        loop {
-            self.poll.poll(&mut events, None).unwrap();
-            'read: loop {
-                if events.is_empty() {
-                    break 'read;
-                }
-                let (len, from) = match self.socket.recv_from(&mut buf) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            break 'read;
-                        }
-                        panic!("recv() failed: {:?}", e);
-                    }
-                };
-                let packet = &mut buf[..len];
-
-                // Process potentially coalesced packets
-                let mut conn = self.connection.take().unwrap();
-                let recv_info = quiche::RecvInfo { from };
-                let _ = match conn.recv(packet, recv_info) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        continue 'read;
-                    }
-                };
-            }
-            loop {
-                let (write, send_info) = match conn.send(&mut out) {
-                    Ok(v) => v,
-                    Err(quiche::Error::Done) => {
-                        self.poll.deregister(&self.socket).unwrap();
-                        return Ok(());
-                    }
-                    Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
-                };
-                if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
-                        break;
-                    }
-                    panic!("send() failed: {:?}", e);
-                }
             }
         }
     }

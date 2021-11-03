@@ -427,7 +427,6 @@ impl QuicListener {
         let mut conn = self.connection.take().unwrap();
         conn.stream_send(stream_id, payload, true).unwrap();
         loop {
-            conn.stream_send(stream_id, payload, true).unwrap();
             let (write, send_info) = match conn.send(payload) {
                 Ok(v) => v,
                 Err(quiche::Error::Done) => {

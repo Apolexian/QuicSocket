@@ -446,6 +446,7 @@ impl QuicListener {
                 panic!("send() failed: {:?}", e);
             }
         }
+        conn.stream_send(stream_id, payload, true).unwrap();
         loop {
             self.poll.poll(&mut events, None).unwrap();
             'read: loop {
@@ -473,7 +474,6 @@ impl QuicListener {
                     }
                 };
             }
-            conn.stream_send(stream_id, payload, true).unwrap();
             loop {
                 let (write, send_info) = match conn.send(&mut out) {
                     Ok(v) => v,

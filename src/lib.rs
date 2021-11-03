@@ -20,6 +20,7 @@ pub struct QuicListener {
     pub socket: mio::net::UdpSocket,
     pub connection: Option<Pin<Box<quiche::Connection>>>,
     poll: mio::Poll,
+    poll_events: mio::Events,
 }
 
 impl QuicListener {
@@ -27,6 +28,7 @@ impl QuicListener {
         let socket = net::UdpSocket::bind(addr).unwrap();
         let socket = mio::net::UdpSocket::from_socket(socket).unwrap();
         let poll = mio::Poll::new().unwrap();
+        let poll_events = mio::Events::with_capacity(1024);
         poll.register(
             &socket,
             mio::Token(0),
@@ -38,6 +40,7 @@ impl QuicListener {
             socket,
             connection: None,
             poll,
+            poll_events,
         })
     }
 
@@ -63,17 +66,16 @@ impl QuicListener {
             .set_application_protos(b"\x0ahq-interop\x05hq-29\x05hq-28\x05hq-27\x08http/0.9")
             .unwrap();
         // set up event loop
-        let mut events = mio::Events::with_capacity(1024);
 
         // create a seed to generate connection id
         let rng = SystemRandom::new();
         let conn_id_seed = ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
 
         loop {
-            self.poll.poll(&mut events, None).unwrap();
+            self.poll.poll(&mut self.poll_events, None).unwrap();
             // read incoming UDP packets from the socket and process them
             'read: loop {
-                if events.is_empty() {
+                if self.poll_events.is_empty() {
                     break 'read;
                 }
                 let (len, from) = match self.socket.recv_from(&mut buf) {
@@ -218,7 +220,6 @@ impl QuicListener {
         config
             .set_application_protos(b"\x0ahq-interop\x05hq-29\x05hq-28\x05hq-27\x08http/0.9")
             .unwrap();
-        let mut events = mio::Events::with_capacity(1024);
         let mut buf = [0; 65535];
         let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
         let mut scid = [0; quiche::MAX_CONN_ID_LEN];
@@ -245,10 +246,10 @@ impl QuicListener {
         self.connection = Some(conn);
         loop {
             let mut conn = self.connection.take().unwrap();
-            self.poll.poll(&mut events, None).unwrap();
+            self.poll.poll(&mut self.poll_events, None).unwrap();
             // Read incoming UDP packets from the socket and process them
             'read: loop {
-                if events.is_empty() {
+                if self.poll_events.is_empty() {
                     break 'read;
                 }
 
@@ -332,11 +333,12 @@ impl QuicListener {
         let mut len_stream = None;
         let mut conn = self.connection.take().unwrap();
         loop {
+            self.poll.poll(&mut self.poll_events, None).unwrap();
             let (len, from) = match self.socket.recv_from(&mut buf) {
                 Ok(v) => v,
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::WouldBlock {
-                        continue;
+                        break;
                     }
                     panic!("recv() failed: {:?}", e);
                 }

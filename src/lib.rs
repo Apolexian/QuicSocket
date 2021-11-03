@@ -340,6 +340,14 @@ impl QuicListener {
                     self.connection = Some(conn);
                     break 'read;
                 }
+                while let Ok((read, fin)) = conn.stream_recv(stream_id, out) {
+                    if fin {
+                        len_stream = Some(read);
+                        done = Some(fin);
+                        self.connection = Some(conn);
+                        break 'read;
+                    }
+                }
                 let (len, from) = match self.socket.recv_from(&mut buf) {
                     Ok(v) => v,
                     Err(e) => {
@@ -360,14 +368,6 @@ impl QuicListener {
                         continue 'read;
                     }
                 };
-                while let Ok((read, fin)) = conn.stream_recv(stream_id, out) {
-                    if fin {
-                        len_stream = Some(read);
-                        done = Some(fin);
-                        self.connection = Some(conn);
-                        break 'read;
-                    }
-                }
             }
             let mut conn = self.connection.take().unwrap();
             loop {

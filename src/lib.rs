@@ -421,7 +421,14 @@ impl QuicListener {
         // set up event loop
         let mut events = mio::Events::with_capacity(1024);
         // register socket with the event loop
-        
+        self.poll
+            .register(
+                &self.socket,
+                mio::Token(0),
+                mio::Ready::readable(),
+                mio::PollOpt::edge(),
+            )
+            .unwrap();
         let mut conn = self.connection.take().unwrap();
         conn.stream_send(stream_id, payload, true).unwrap();
         loop {

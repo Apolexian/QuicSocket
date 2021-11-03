@@ -413,6 +413,7 @@ impl QuicListener {
 
     pub fn stream_send(&mut self, stream_id: u64, payload: &mut [u8]) -> io::Result<()> {
         let mut buf = [0; 65535];
+        let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
         // set up event loop
         let mut events = mio::Events::with_capacity(1024);
         // register socket with the event loop
@@ -427,7 +428,7 @@ impl QuicListener {
         let mut conn = self.connection.take().unwrap();
         conn.stream_send(stream_id, payload, true).unwrap();
         loop {
-            let (write, send_info) = match conn.send(payload) {
+            let (write, send_info) = match conn.send(&mut out) {
                 Ok(v) => v,
                 Err(quiche::Error::Done) => {
                     self.poll.deregister(&self.socket).unwrap();
@@ -470,7 +471,7 @@ impl QuicListener {
                 };
             }
             loop {
-                let (write, send_info) = match conn.send(payload) {
+                let (write, send_info) = match conn.send(&mut out) {
                     Ok(v) => v,
                     Err(quiche::Error::Done) => {
                         self.poll.deregister(&self.socket).unwrap();

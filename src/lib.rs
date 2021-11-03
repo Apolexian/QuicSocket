@@ -423,6 +423,7 @@ impl QuicListener {
             };
             if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
+                    self.connection = Some(conn);
                     return Ok(());
                 }
                 panic!("send() failed: {:?}", e);

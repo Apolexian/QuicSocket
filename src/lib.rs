@@ -217,6 +217,7 @@ impl QuicListener {
         addr: SocketAddr,
         payload: &mut [u8],
         stream_id: u64,
+        fin: bool
     ) -> Result<(), io::Error> {
         let mut config = match self.default_quiche_config() {
             Ok(conf) => conf,
@@ -317,7 +318,7 @@ impl QuicListener {
             // Generate outgoing QUIC packets
             loop {
                 if conn.is_established() {
-                    conn.stream_send(stream_id, payload, true).unwrap();
+                    conn.stream_send(stream_id, payload, fin).unwrap();
                 }
                 let (write, send_info) = match conn.send(&mut out) {
                     Ok(v) => v,

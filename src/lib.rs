@@ -41,7 +41,7 @@ impl QuicListener {
         })
     }
 
-    pub fn accept(&mut self) -> Result<(), io::Error> {
+    pub fn recv(&mut self, stream_out: &mut [u8], stream_id: u64) -> Result<usize, io::Error> {
         // initialise needed buffers
         let mut buf = [0; 65535];
         let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
@@ -179,11 +179,13 @@ impl QuicListener {
                 continue;
             }
             let mut conn = self.connection.take().unwrap();
-            // if handshake is complete then connection establishment is done
-            // then we can return as we are ready for stream send and receive
+            let mut some_read = None;
             if conn.is_established() {
-                self.connection = Some(conn);
-                return Ok(());
+                while let Ok((read, fin)) = conn.stream_recv(stream_id, stream_out) {
+                    if fin {
+                        some_read = Some(read);
+                    }
+                }
             }
             loop {
                 let (write, send_info) = match conn.send(&mut out) {
@@ -200,11 +202,20 @@ impl QuicListener {
                     panic!("send() failed: {:?}", e);
                 }
             }
+            if conn.is_established() {
+                self.connection = Some(conn);
+                return Ok(some_read.unwrap());
+            }
             self.connection = Some(conn);
         }
     }
 
-    pub fn connect(&mut self, addr: SocketAddr) -> Result<(), io::Error> {
+    pub fn send(
+        &mut self,
+        addr: SocketAddr,
+        payload: &mut [u8],
+        stream_id: u64,
+    ) -> Result<(), io::Error> {
         let mut config = match self.default_quiche_config() {
             Ok(conf) => conf,
             Err(_) => {
@@ -300,6 +311,9 @@ impl QuicListener {
                         }
                     }
                 }
+            }
+            if conn.is_established() {
+                conn.stream_send(stream_id, payload, true).unwrap();
             }
             // Generate outgoing QUIC packets
             loop {

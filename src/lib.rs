@@ -180,11 +180,13 @@ impl QuicListener {
             }
             let mut conn = self.connection.take().unwrap();
             let mut some_read = None;
+            let mut some_fin = None;
             loop {
                 if conn.is_established() {
                     while let Ok((read, fin)) = conn.stream_recv(stream_id, stream_out) {
                         if fin {
                             some_read = Some(read);
+                            some_fin = Some(fin);
                         }
                     }
                 }
@@ -202,7 +204,7 @@ impl QuicListener {
                     panic!("send() failed: {:?}", e);
                 }
             }
-            if conn.is_established() {
+            if conn.is_established() && some_fin.unwrap() == true {
                 self.connection = Some(conn);
                 return Ok(some_read.unwrap());
             }

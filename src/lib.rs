@@ -175,10 +175,8 @@ impl QuicListener {
                 };
                 if conn.is_established() {
                     while let Ok((read, fin)) = conn.stream_recv(stream_id, stream_out) {
-                        if fin {
-                            some_read = Some(read);
-                            some_fin = Some(fin);
-                        }
+                        some_read = Some(read);
+                        some_fin = Some(fin);
                     }
                 }
                 self.connection = Some(conn);

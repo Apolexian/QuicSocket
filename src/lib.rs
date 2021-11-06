@@ -68,7 +68,8 @@ impl QuicListener {
         // create a seed to generate connection id
         let rng = SystemRandom::new();
         let conn_id_seed = ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
-
+        let mut some_read = None;
+        let mut some_fin = None;
         loop {
             self.poll.poll(&mut events, None).unwrap();
             // read incoming UDP packets from the socket and process them
@@ -172,6 +173,14 @@ impl QuicListener {
                         continue 'read;
                     }
                 };
+                if conn.is_established() {
+                    while let Ok((read, fin)) = conn.stream_recv(stream_id, stream_out) {
+                        if fin {
+                            some_read = Some(read);
+                            some_fin = Some(fin);
+                        }
+                    }
+                }
                 self.connection = Some(conn);
             }
             // Generate outgoing QUIC packets for connection
@@ -179,16 +188,6 @@ impl QuicListener {
                 continue;
             }
             let mut conn = self.connection.take().unwrap();
-            let mut some_read = None;
-            let mut some_fin = None;
-            if conn.is_established() {
-                while let Ok((read, fin)) = conn.stream_recv(stream_id, stream_out) {
-                    if fin {
-                        some_read = Some(read);
-                        some_fin = Some(fin);
-                    }
-                }
-            }
             loop {
                 let (write, send_info) = match conn.send(&mut out) {
                     Ok(v) => v,

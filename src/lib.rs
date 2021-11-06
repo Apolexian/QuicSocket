@@ -183,13 +183,10 @@ impl QuicListener {
             let mut some_fin = None;
             loop {
                 if conn.is_established() {
-                    loop {
-                        while let Ok((read, fin)) = conn.stream_recv(stream_id, stream_out) {
-                            if fin {
-                                some_read = Some(read);
-                                some_fin = Some(fin);
-                                break;
-                            }
+                    while let Ok((read, fin)) = conn.stream_recv(stream_id, stream_out) {
+                        if fin {
+                            some_read = Some(read);
+                            some_fin = Some(fin);
                         }
                     }
                 }
@@ -317,11 +314,11 @@ impl QuicListener {
                     }
                 }
             }
-            if conn.is_established() {
-                conn.stream_send(stream_id, payload, true).unwrap();
-            }
             // Generate outgoing QUIC packets
             loop {
+                if conn.is_established() {
+                    conn.stream_send(stream_id, payload, true).unwrap();
+                }
                 let (write, send_info) = match conn.send(&mut out) {
                     Ok(v) => v,
                     Err(quiche::Error::Done) => {

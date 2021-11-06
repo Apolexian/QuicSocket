@@ -181,15 +181,15 @@ impl QuicListener {
             let mut conn = self.connection.take().unwrap();
             let mut some_read = None;
             let mut some_fin = None;
-            loop {
-                if conn.is_established() {
-                    while let Ok((read, fin)) = conn.stream_recv(stream_id, stream_out) {
-                        if fin {
-                            some_read = Some(read);
-                            some_fin = Some(fin);
-                        }
+            if conn.is_established() {
+                while let Ok((read, fin)) = conn.stream_recv(stream_id, stream_out) {
+                    if fin {
+                        some_read = Some(read);
+                        some_fin = Some(fin);
                     }
                 }
+            }
+            loop {
                 let (write, send_info) = match conn.send(&mut out) {
                     Ok(v) => v,
                     Err(quiche::Error::Done) => {
@@ -217,7 +217,7 @@ impl QuicListener {
         addr: SocketAddr,
         payload: &mut [u8],
         stream_id: u64,
-        fin: bool
+        fin: bool,
     ) -> Result<(), io::Error> {
         let mut config = match self.default_quiche_config() {
             Ok(conf) => conf,

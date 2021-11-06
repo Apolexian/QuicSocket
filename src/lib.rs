@@ -20,6 +20,7 @@ pub struct QuicListener {
     pub socket: mio::net::UdpSocket,
     pub connection: Option<Pin<Box<quiche::Connection>>>,
     poll: mio::Poll,
+    pub addr: SocketAddr
 }
 
 impl QuicListener {
@@ -38,6 +39,7 @@ impl QuicListener {
             socket,
             connection: None,
             poll,
+            addr
         })
     }
 

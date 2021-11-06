@@ -180,14 +180,14 @@ impl QuicListener {
             }
             let mut conn = self.connection.take().unwrap();
             let mut some_read = None;
-            if conn.is_established() {
-                while let Ok((read, fin)) = conn.stream_recv(stream_id, stream_out) {
-                    if fin {
-                        some_read = Some(read);
+            loop {
+                if conn.is_established() {
+                    while let Ok((read, fin)) = conn.stream_recv(stream_id, stream_out) {
+                        if fin {
+                            some_read = Some(read);
+                        }
                     }
                 }
-            }
-            loop {
                 let (write, send_info) = match conn.send(&mut out) {
                     Ok(v) => v,
                     Err(quiche::Error::Done) => {
@@ -340,128 +340,6 @@ impl QuicListener {
         }
     }
 
-    pub fn stream_recv(&mut self, stream_id: u64, out: &mut [u8]) -> io::Result<usize> {
-        let mut buf = [0; 65535];
-        // set up event loop
-        let mut events = mio::Events::with_capacity(1024);
-        let mut len_stream = None;
-        loop {
-            let mut conn = self.connection.take().unwrap();
-            let mut done = None;
-            self.poll.poll(&mut events, None).unwrap();
-            'read: loop {
-                if events.is_empty() {
-                    self.connection = Some(conn);
-                    break 'read;
-                }
-                let (len, from) = match self.socket.recv_from(&mut buf) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            self.connection = Some(conn);
-                            break 'read;
-                        }
-                        panic!("recv() failed: {:?}", e);
-                    }
-                };
-                let packet = &mut buf[..len];
-
-                // Process potentially coalesced packets
-                let recv_info = quiche::RecvInfo { from };
-                let _ = match conn.recv(packet, recv_info) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        continue 'read;
-                    }
-                };
-                while let Ok((read, fin)) = conn.stream_recv(stream_id, out) {
-                    if fin {
-                        len_stream = Some(read);
-                        done = Some(fin);
-                        self.connection = Some(conn);
-                        break 'read;
-                    }
-                }
-            }
-            let mut conn = self.connection.take().unwrap();
-            loop {
-                let (write, send_info) = match conn.send(out) {
-                    Ok(v) => v,
-                    Err(quiche::Error::Done) => {
-                        self.connection = Some(conn);
-                        break;
-                    }
-                    Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
-                };
-                if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
-                        self.connection = Some(conn);
-                        break;
-                    }
-                    panic!("send() failed: {:?}", e);
-                }
-            }
-            if done.unwrap() == true {
-                return Ok(len_stream.unwrap());
-            }
-        }
-    }
-
-    pub fn stream_send(&mut self, stream_id: u64, payload: &mut [u8]) -> io::Result<()> {
-        let mut out = [0; DEFAULT_MAX_DATAGRAM_SIZE];
-        let mut buf = [0; 65535];
-        let mut conn = self.connection.take().unwrap();
-        let events = mio::Events::with_capacity(1024);
-        conn.stream_send(stream_id, payload, true).unwrap();
-        loop {
-            'read: loop {
-                if events.is_empty() {
-                    break 'read;
-                }
-                let (len, from) = match self.socket.recv_from(&mut buf) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            break 'read;
-                        }
-                        panic!("recv() failed: {:?}", e);
-                    }
-                };
-                let packet = &mut buf[..len];
-
-                // Process potentially coalesced packets
-                let recv_info = quiche::RecvInfo { from };
-                let _ = match conn.recv(packet, recv_info) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        continue 'read;
-                    }
-                };
-                while let Ok((_, fin)) = conn.stream_recv(stream_id, &mut out) {
-                    if fin {
-                        break 'read;
-                    }
-                }
-            }
-            loop {
-                let (write, send_info) = match conn.send(&mut out) {
-                    Ok(v) => v,
-                    Err(quiche::Error::Done) => {
-                        self.connection = Some(conn);
-                        return Ok(());
-                    }
-                    Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
-                };
-                if let Err(e) = self.socket.send_to(&mut out[..write], &send_info.to) {
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
-                        self.connection = Some(conn);
-                        return Ok(());
-                    }
-                    panic!("send() failed: {:?}", e);
-                }
-            }
-        }
-    }
     fn default_quiche_config(&self) -> Result<quiche::Config, io::Error> {
         let mut quiche_config = match quiche::Config::new(quiche::PROTOCOL_VERSION) {
             Ok(v) => v,

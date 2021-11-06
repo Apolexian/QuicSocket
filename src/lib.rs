@@ -316,10 +316,10 @@ impl QuicListener {
                 }
             }
             // Generate outgoing QUIC packets
+            if conn.is_established() {
+                conn.stream_send(stream_id, payload, fin).unwrap();
+            }
             loop {
-                if conn.is_established() {
-                    conn.stream_send(stream_id, payload, fin).unwrap();
-                }
                 let (write, send_info) = match conn.send(&mut out) {
                     Ok(v) => v,
                     Err(quiche::Error::Done) => {

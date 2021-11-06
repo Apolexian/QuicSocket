@@ -204,7 +204,7 @@ impl QuicListener {
                     panic!("send() failed: {:?}", e);
                 }
             }
-            if conn.is_established() && some_fin.unwrap() == true {
+            if conn.is_established() && some_fin.is_some() {
                 self.connection = Some(conn);
                 return Ok(some_read.unwrap());
             }

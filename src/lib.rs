@@ -71,7 +71,7 @@ impl QuicListener {
         remote_url: Url,
         host: Option<String>,
         payload: &mut [u8],
-    ) -> Result<std::vec::Vec<u8>> {
+    ) -> Result<()> {
         let remote = (
             remote_url.host_str().unwrap(),
             remote_url.port().unwrap_or(4433),
@@ -100,7 +100,7 @@ impl QuicListener {
         let quinn::NewConnection {
             connection: conn, ..
         } = new_conn;
-        let (mut send, recv) = conn
+        let (mut send, _) = conn
             .open_bi()
             .await
             .map_err(|e| anyhow!("failed to open stream: {}", e))?;
@@ -110,13 +110,9 @@ impl QuicListener {
         send.finish()
             .await
             .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
-        let resp = recv
-            .read_to_end(usize::max_value())
-            .await
-            .map_err(|e| anyhow!("failed to read response: {}", e))?;
         conn.close(0u32.into(), b"done");
         endpoint.wait_idle().await;
-        Ok(resp)
+        Ok(())
     }
 }
 

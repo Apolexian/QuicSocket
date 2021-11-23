@@ -66,7 +66,6 @@ impl QuicListener {
     }
 
     pub async fn send(
-        self,
         ca: String,
         remote_url: Url,
         host: Option<String>,

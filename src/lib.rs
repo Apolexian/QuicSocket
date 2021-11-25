@@ -113,6 +113,7 @@ async fn handle_spawn(conn: quinn::Connecting) -> Result<std::vec::Vec<u8>> {
             Ok(s) => s,
         };
         req = Some(tokio::spawn(handle_request(stream)).await?);
+        break;
     }
     Ok(req.unwrap())
 }

@@ -113,8 +113,9 @@ async fn handle_connection(conn: quinn::Connecting) -> Result<std::vec::Vec<u8>>
         }
         Ok(())
     }
-    .await.unwrap();
-    Ok(req.unwrap().await.unwrap())
+    .await?;
+    let ret = req.unwrap().await;
+    Ok(ret.unwrap())
 }
 
 async fn handle_request(

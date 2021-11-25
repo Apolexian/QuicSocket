@@ -85,7 +85,7 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     Arc::get_mut(&mut server_config.transport)
         .unwrap()
         .max_concurrent_uni_streams(0_u8.into());
-    fs::write("./cert.der", &cert_der).unwrap();
+    fs::write("../client/cert.der", &cert_der).unwrap();
     Ok((server_config, cert_der))
 }
 

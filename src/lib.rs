@@ -1,62 +1,15 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
-use quinn::{ClientConfig, Endpoint, Incoming, ServerConfig};
-use std::{error::Error, fs, net::SocketAddr, net::ToSocketAddrs, path::PathBuf, sync::Arc};
+use quinn::{ServerConfig};
+use std::{error::Error, fs, net::SocketAddr, net::ToSocketAddrs, sync::Arc};
 use url::Url;
 
 pub struct QuicListener {}
 
 impl QuicListener {
     #[allow(clippy::field_reassign_with_default)] // https://github.com/rust-lang/rust-clippy/issues/6527
-    pub async fn recv(
-        key: PathBuf,
-        cert: PathBuf,
-        listen: SocketAddr,
-    ) -> Result<std::vec::Vec<u8>> {
-        let (certs, key) = {
-            let key_path = &key;
-            let cert_path = &cert;
-            let key = fs::read(key_path).context("failed to read private key")?;
-            let key = if key_path.extension().map_or(false, |x| x == "der") {
-                rustls::PrivateKey(key)
-            } else {
-                let pkcs8 = rustls_pemfile::pkcs8_private_keys(&mut &*key)
-                    .context("malformed PKCS #8 private key")?;
-                match pkcs8.into_iter().next() {
-                    Some(x) => rustls::PrivateKey(x),
-                    None => {
-                        let rsa = rustls_pemfile::rsa_private_keys(&mut &*key)
-                            .context("malformed PKCS #1 private key")?;
-                        match rsa.into_iter().next() {
-                            Some(x) => rustls::PrivateKey(x),
-                            None => {
-                                anyhow::bail!("no private keys found");
-                            }
-                        }
-                    }
-                }
-            };
-            let cert_chain = fs::read(cert_path).context("failed to read certificate chain")?;
-            let cert_chain = if cert_path.extension().map_or(false, |x| x == "der") {
-                vec![rustls::Certificate(cert_chain)]
-            } else {
-                rustls_pemfile::certs(&mut &*cert_chain)
-                    .context("invalid PEM-encoded certificate")?
-                    .into_iter()
-                    .map(rustls::Certificate)
-                    .collect()
-            };
-            (cert_chain, key)
-        };
-        let mut server_crypto = rustls::ServerConfig::builder()
-            .with_safe_defaults()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)?;
-        server_crypto.alpn_protocols = ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
-        let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(server_crypto));
-        Arc::get_mut(&mut server_config.transport)
-            .unwrap()
-            .max_concurrent_uni_streams(0_u8.into());
+    pub async fn recv(listen: SocketAddr) -> Result<std::vec::Vec<u8>> {
+        let (server_config, _) = configure_server().unwrap();
         let (_, mut incoming) = quinn::Endpoint::server(server_config, listen)?;
         let mut ret = None;
         while let Some(conn) = incoming.next().await {
@@ -113,33 +66,6 @@ impl QuicListener {
         endpoint.wait_idle().await;
         Ok(())
     }
-}
-
-#[allow(unused)]
-pub fn make_client_endpoint(
-    bind_addr: SocketAddr,
-    server_certs: &[&[u8]],
-) -> Result<Endpoint, Box<dyn Error>> {
-    let client_cfg = configure_client(server_certs)?;
-    let mut endpoint = Endpoint::client(bind_addr)?;
-    endpoint.set_default_client_config(client_cfg);
-    Ok(endpoint)
-}
-
-#[allow(unused)]
-pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Incoming, Vec<u8>), Box<dyn Error>> {
-    let (server_config, server_cert) = configure_server()?;
-    let (_endpoint, incoming) = Endpoint::server(server_config, bind_addr)?;
-    Ok((incoming, server_cert))
-}
-
-fn configure_client(server_certs: &[&[u8]]) -> Result<ClientConfig, Box<dyn Error>> {
-    let mut certs = rustls::RootCertStore::empty();
-    for cert in server_certs {
-        certs.add(&rustls::Certificate(cert.to_vec()))?;
-    }
-
-    Ok(ClientConfig::with_root_certificates(certs))
 }
 
 #[allow(clippy::field_reassign_with_default)] // https://github.com/rust-lang/rust-clippy/issues/6527

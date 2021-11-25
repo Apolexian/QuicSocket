@@ -14,6 +14,7 @@ impl QuicListener {
         let mut ret = None;
         while let Some(conn) = incoming.next().await {
             ret = Some(tokio::spawn(handle_connection(conn)).await);
+            break;
         }
         Ok(ret.unwrap().unwrap().unwrap())
     }

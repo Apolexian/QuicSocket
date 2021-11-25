@@ -92,38 +92,36 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
 pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
 
 async fn handle_connection(conn: quinn::Connecting) -> Result<std::vec::Vec<u8>> {
+    Ok(handle_spawn(conn).await.unwrap())
+}
+
+async fn handle_spawn(conn: quinn::Connecting) -> Result<std::vec::Vec<u8>> {
     let quinn::NewConnection {
         connection: _,
         mut bi_streams,
         ..
     } = conn.await?;
     let mut req = None;
-    async {
-        while let Some(stream) = bi_streams.next().await {
-            let stream = match stream {
-                Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
-                    return Ok(());
-                }
-                Err(e) => {
-                    return Err(e);
-                }
-                Ok(s) => s,
-            };
-            req = Some(tokio::spawn(handle_request(stream)));
-        }
-        Ok(())
+    while let Some(stream) = bi_streams.next().await {
+        let stream = match stream {
+            Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
+                return Ok(vec![]);
+            }
+            Err(e) => {
+                return Err(anyhow::Error::new(e));
+            }
+            Ok(s) => s,
+        };
+        req = Some(tokio::spawn(handle_request(stream)).await?);
     }
-    .await?;
-    let ret = req.unwrap().await;
-    Ok(ret.unwrap())
+    Ok(req.unwrap())
 }
 
-async fn handle_request(
-    (_, recv): (quinn::SendStream, quinn::RecvStream),
-) -> std::vec::Vec<u8> {
+async fn handle_request((_, recv): (quinn::SendStream, quinn::RecvStream)) -> std::vec::Vec<u8> {
     let req = recv
         .read_to_end(64 * 1024)
         .await
-        .map_err(|e| anyhow!("failed reading request: {}", e)).unwrap();
+        .map_err(|e| anyhow!("failed reading request: {}", e))
+        .unwrap();
     req
 }

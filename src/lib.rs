@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
-use quinn::{ServerConfig};
+use quinn::ServerConfig;
 use std::{error::Error, fs, net::SocketAddr, net::ToSocketAddrs, sync::Arc};
 use url::Url;
 
@@ -80,7 +80,7 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     Arc::get_mut(&mut server_config.transport)
         .unwrap()
         .max_concurrent_uni_streams(0_u8.into());
-
+    fs::write("./cert.der", &cert_der).unwrap();
     Ok((server_config, cert_der))
 }
 

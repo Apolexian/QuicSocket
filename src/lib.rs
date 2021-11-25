@@ -13,9 +13,9 @@ impl QuicListener {
         let (_, mut incoming) = quinn::Endpoint::server(server_config, listen)?;
         let mut ret = None;
         while let Some(conn) = incoming.next().await {
-            ret = Some(tokio::spawn(handle_connection(conn)));
+            ret = Some(tokio::spawn(handle_connection(conn)).await);
         }
-        Ok(ret.unwrap().await.unwrap().unwrap())
+        Ok(ret.unwrap().unwrap().unwrap())
     }
 
     pub async fn send(

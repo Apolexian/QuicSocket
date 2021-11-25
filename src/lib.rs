@@ -113,17 +113,16 @@ async fn handle_connection(conn: quinn::Connecting) -> Result<std::vec::Vec<u8>>
         }
         Ok(())
     }
-    .await?;
-
-    Ok(req.unwrap().await.unwrap().unwrap())
+    .await.unwrap();
+    Ok(req.unwrap().await.unwrap())
 }
 
 async fn handle_request(
     (_, recv): (quinn::SendStream, quinn::RecvStream),
-) -> Result<std::vec::Vec<u8>> {
+) -> std::vec::Vec<u8> {
     let req = recv
         .read_to_end(64 * 1024)
         .await
-        .map_err(|e| anyhow!("failed reading request: {}", e))?;
-    Ok(req)
+        .map_err(|e| anyhow!("failed reading request: {}", e)).unwrap();
+    req
 }

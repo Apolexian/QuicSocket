@@ -154,11 +154,11 @@ fn configure_server() -> Result<ServerConfig, Box<dyn Error>> {
     let cert_chain = fs::read("./key.pem")?;
     let key = fs::read("./cert.pem")?;
     let priv_key = rustls::PrivateKey(key);
-    let cert_chain = vec![rustls::Certificate(cert_chain.clone())];
+    let cert = vec![rustls::Certificate(cert_chain.clone())];
     let mut server_crypto = rustls::ServerConfig::builder()
         .with_safe_defaults()
         .with_no_client_auth()
-        .with_single_cert(cert_chain, priv_key)?;
+        .with_single_cert(cert, priv_key)?;
     server_crypto.alpn_protocols = ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(server_crypto));
     Arc::get_mut(&mut server_config.transport)

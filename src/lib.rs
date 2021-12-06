@@ -4,12 +4,38 @@ use quinn::ServerConfig;
 use std::{error::Error, fs, net::SocketAddr, net::ToSocketAddrs, sync::Arc};
 use url::Url;
 
+trait QuicSocket {
+    fn new(addr: Option<SocketAddr>) -> Self;
+    fn send(payload: &mut [u8]) -> Result<()>;
+    fn recv() -> Result<std::vec::Vec<u8>>;
+}
+
+pub struct QuicServer {
+    server_config: ServerConfig,
+}
+
+pub struct QuicClient {}
+
+/**
+impl QuicSocket for QuicServer {
+    fn new(addr: Option<SocketAddr>) -> QuicServer {
+
+    }
+    fn send(payload: &mut [u8]) -> Result<()> {
+
+    }
+    fn recv() -> Result<std::vec::Vec<u8>> {
+
+    }
+
+}
+*/
 pub struct QuicListener {}
 
 impl QuicListener {
     #[allow(clippy::field_reassign_with_default)] // https://github.com/rust-lang/rust-clippy/issues/6527
     pub async fn recv(listen: SocketAddr, path: String) -> Result<std::vec::Vec<u8>> {
-        let (server_config, _) = configure_server(path).unwrap();
+        let server_config = configure_server().unwrap();
         let (_, mut incoming) = quinn::Endpoint::server(server_config, listen)?;
         let mut ret = None;
         while let Some(conn) = incoming.next().await {
@@ -70,7 +96,26 @@ impl QuicListener {
 }
 
 #[allow(clippy::field_reassign_with_default)] // https://github.com/rust-lang/rust-clippy/issues/6527
-fn configure_server(path: String) -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
+fn configure_server() -> Result<ServerConfig, Box<dyn Error>> {
+    let cert_chain = fs::read("./cert.pem")?;
+    let key = fs::read("./key.pem")?;
+    let priv_key = rustls::PrivateKey(key);
+    let cert_chain = vec![rustls::Certificate(cert_chain.clone())];
+    let mut server_crypto = rustls::ServerConfig::builder()
+        .with_safe_defaults()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, priv_key)?;
+    server_crypto.alpn_protocols = ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(server_crypto));
+    Arc::get_mut(&mut server_config.transport)
+        .unwrap()
+        .max_concurrent_uni_streams(0_u8.into());
+    Ok(server_config)
+}
+
+#[allow(unused)]
+#[allow(clippy::field_reassign_with_default)] // https://github.com/rust-lang/rust-clippy/issues/6527
+fn gen_certificates(path: String) -> Result<(), Box<dyn Error>> {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = cert.serialize_der().unwrap();
     let priv_key = cert.serialize_private_key_der();
@@ -81,12 +126,8 @@ fn configure_server(path: String) -> Result<(ServerConfig, Vec<u8>), Box<dyn Err
         .with_no_client_auth()
         .with_single_cert(cert_chain, priv_key)?;
     server_crypto.alpn_protocols = ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
-    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(server_crypto));
-    Arc::get_mut(&mut server_config.transport)
-        .unwrap()
-        .max_concurrent_uni_streams(0_u8.into());
     fs::write(path, &cert_der).unwrap();
-    Ok((server_config, cert_der))
+    Ok(())
 }
 
 #[allow(unused)]

@@ -1,6 +1,6 @@
 [package]
 name = "quic-socket"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 authors = ["Ivan Nikitin <ivan@niktivan.org>"]
 description = "Socket-esc wrapper on the quiche QUIC implementation"
@@ -20,3 +20,4 @@ url = "2.2.2"
 rustls-pemfile = "0.2.1"
 tokio = "1.12.0"
 futures-util = "0.3.17"
+async-trait = "0.1.51"

@@ -17,7 +17,9 @@ pub struct QuicServer {
     pub incoming: Incoming,
 }
 
-pub struct QuicClient {}
+pub struct QuicClient {
+    endpoint: Endpoint,
+}
 
 #[async_trait]
 impl QuicSocket for QuicServer {
@@ -56,27 +58,26 @@ impl QuicSocket for QuicServer {
     }
 }
 
-pub struct QuicListener {}
-
-impl QuicListener {
-    #[allow(clippy::field_reassign_with_default)] // https://github.com/rust-lang/rust-clippy/issues/6527
-    pub async fn recv(listen: SocketAddr) -> Result<std::vec::Vec<u8>> {
-        let server_config = configure_server().unwrap();
-        let (_, mut incoming) = quinn::Endpoint::server(server_config, listen)?;
-        let mut ret = None;
-        while let Some(conn) = incoming.next().await {
-            ret = Some(tokio::spawn(handle_connection(conn)).await);
-            break;
-        }
-        Ok(ret.unwrap().unwrap().unwrap())
+#[async_trait]
+impl QuicSocket for QuicClient {
+    fn new(_addr: Option<SocketAddr>) -> Self {
+        let ca = "cert.der".to_string();
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(&rustls::Certificate(fs::read(&ca).unwrap()))
+            .unwrap();
+        let mut client_crypto = rustls::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        client_crypto.alpn_protocols = ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
+        let mut endpoint = quinn::Endpoint::client("[::]:0".parse().unwrap()).unwrap();
+        endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(client_crypto)));
+        QuicClient { endpoint }
     }
-
-    pub async fn send(
-        ca: String,
-        remote_url: Url,
-        host: Option<String>,
-        payload: &mut [u8],
-    ) -> Result<()> {
+    async fn send(&mut self, payload: Vec<u8>) -> Result<()> {
+        let remote_url = Url::parse("http://127.0.0.1:4442").unwrap();
+        let host = Some("localhost".to_string());
         let remote = (
             remote_url.host_str().unwrap(),
             remote_url.port().unwrap_or(4433),
@@ -85,20 +86,13 @@ impl QuicListener {
             .next()
             .ok_or_else(|| anyhow!("couldn't resolve to an address"))
             .unwrap();
-        let mut roots = rustls::RootCertStore::empty();
-        roots.add(&rustls::Certificate(fs::read(&ca)?)).unwrap();
-        let mut client_crypto = rustls::ClientConfig::builder()
-            .with_safe_defaults()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-        client_crypto.alpn_protocols = ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
-        let mut endpoint = quinn::Endpoint::client("[::]:0".parse().unwrap())?;
-        endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(client_crypto)));
+
         let host = host
             .as_ref()
             .map_or_else(|| remote_url.host_str(), |x| Some(x))
             .ok_or_else(|| anyhow!("no hostname specified"))?;
-        let new_conn = endpoint
+        let new_conn = self
+            .endpoint
             .connect(remote, host)?
             .await
             .map_err(|e| anyhow!("failed to connect: {}", e))?;
@@ -109,15 +103,49 @@ impl QuicListener {
             .open_bi()
             .await
             .map_err(|e| anyhow!("failed to open stream: {}", e))?;
-        send.write_all(payload)
+        send.write_all(&payload)
             .await
             .map_err(|e| anyhow!("failed to send request: {}", e))?;
         send.finish()
             .await
             .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
         conn.close(0u32.into(), b"done");
-        endpoint.wait_idle().await;
+        self.endpoint.wait_idle().await;
         Ok(())
+    }
+    async fn recv(&mut self) -> Result<std::vec::Vec<u8>> {
+        let remote_url = Url::parse("http://127.0.0.1:4442").unwrap();
+        let host = Some("localhost".to_string());
+        let remote = (
+            remote_url.host_str().unwrap(),
+            remote_url.port().unwrap_or(4433),
+        )
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(|| anyhow!("couldn't resolve to an address"))
+            .unwrap();
+
+        let host = host
+            .as_ref()
+            .map_or_else(|| remote_url.host_str(), |x| Some(x))
+            .ok_or_else(|| anyhow!("no hostname specified"))?;
+        let new_conn = self
+            .endpoint
+            .connect(remote, host)?
+            .await
+            .map_err(|e| anyhow!("failed to connect: {}", e))?;
+        let quinn::NewConnection {
+            connection: conn, ..
+        } = new_conn;
+        let (_, recv) = conn
+            .open_bi()
+            .await
+            .map_err(|e| anyhow!("failed to open stream: {}", e))?;
+        let recv_bytes = recv
+            .read_to_end(usize::max_value())
+            .await
+            .map_err(|e| anyhow!("failed to read response: {}", e))?;
+        Ok(recv_bytes)
     }
 }
 

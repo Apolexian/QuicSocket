@@ -169,18 +169,20 @@ fn configure_server() -> Result<ServerConfig, Box<dyn Error>> {
 
 #[allow(unused)]
 #[allow(clippy::field_reassign_with_default)] // https://github.com/rust-lang/rust-clippy/issues/6527
-fn gen_certificates(path: String) -> Result<(), Box<dyn Error>> {
+pub fn gen_certificates() -> Result<(), Box<dyn Error>> {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = cert.serialize_der().unwrap();
+    fs::write("./cert.pem".to_string(), &cert_der).unwrap();
     let priv_key = cert.serialize_private_key_der();
-    let priv_key = rustls::PrivateKey(priv_key);
-    let cert_chain = vec![rustls::Certificate(cert_der.clone())];
+    fs::write("./priv_key.pem".to_string(), &priv_key).unwrap();
+    let key = rustls::PrivateKey(priv_key);
+    let cert = vec![rustls::Certificate(cert_der.clone())];
     let mut server_crypto = rustls::ServerConfig::builder()
         .with_safe_defaults()
         .with_no_client_auth()
-        .with_single_cert(cert_chain, priv_key)?;
+        .with_single_cert(cert, key)?;
     server_crypto.alpn_protocols = ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
-    fs::write(path, &cert_der).unwrap();
+    fs::write("./cert.der".to_string(), &cert_der).unwrap();
     Ok(())
 }
 

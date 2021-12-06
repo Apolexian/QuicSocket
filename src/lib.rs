@@ -6,7 +6,7 @@ use std::{error::Error, fs, net::SocketAddr, net::ToSocketAddrs, sync::Arc};
 use url::Url;
 
 #[async_trait]
-trait QuicSocket {
+pub trait QuicSocket {
     fn new(addr: Option<SocketAddr>) -> Self;
     async fn send(&mut self, payload: Vec<u8>) -> Result<()>;
     async fn recv(&mut self) -> Result<std::vec::Vec<u8>>;

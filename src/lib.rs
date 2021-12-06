@@ -151,8 +151,8 @@ impl QuicSocket for QuicClient {
 
 #[allow(clippy::field_reassign_with_default)] // https://github.com/rust-lang/rust-clippy/issues/6527
 fn configure_server() -> Result<ServerConfig, Box<dyn Error>> {
-    let cert_chain = fs::read("./cert.pem")?;
-    let key = fs::read("./key.pem")?;
+    let cert_chain = fs::read("./key.pem")?;
+    let key = fs::read("./cert.pem")?;
     let priv_key = rustls::PrivateKey(key);
     let cert_chain = vec![rustls::Certificate(cert_chain.clone())];
     let mut server_crypto = rustls::ServerConfig::builder()

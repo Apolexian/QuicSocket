@@ -182,7 +182,6 @@ pub fn gen_certificates() -> Result<(), Box<dyn Error>> {
         .with_no_client_auth()
         .with_single_cert(cert, key)?;
     server_crypto.alpn_protocols = ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
-    fs::write("./cert.der".to_string(), &cert_der).unwrap();
     Ok(())
 }
 

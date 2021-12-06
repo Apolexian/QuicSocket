@@ -18,7 +18,7 @@ pub struct QuicServer {
 }
 
 pub struct QuicClient {
-    endpoint: Endpoint,
+    pub endpoint: Endpoint,
 }
 
 #[async_trait]

@@ -1,40 +1,66 @@
 use anyhow::{anyhow, Result};
+use async_trait::async_trait;
 use futures_util::StreamExt;
-use quinn::ServerConfig;
+use quinn::{Endpoint, Incoming, ServerConfig};
 use std::{error::Error, fs, net::SocketAddr, net::ToSocketAddrs, sync::Arc};
 use url::Url;
 
+#[async_trait]
 trait QuicSocket {
     fn new(addr: Option<SocketAddr>) -> Self;
-    fn send(payload: &mut [u8]) -> Result<()>;
-    fn recv() -> Result<std::vec::Vec<u8>>;
+    async fn send(&mut self, payload: Vec<u8>) -> Result<()>;
+    async fn recv(&mut self) -> Result<std::vec::Vec<u8>>;
 }
 
 pub struct QuicServer {
-    server_config: ServerConfig,
+    pub endpoint: Endpoint,
+    pub incoming: Incoming,
 }
 
 pub struct QuicClient {}
 
-/**
+#[async_trait]
 impl QuicSocket for QuicServer {
     fn new(addr: Option<SocketAddr>) -> QuicServer {
-
+        let server_config = configure_server().unwrap();
+        let (endpoint, incoming) = quinn::Endpoint::server(server_config, addr.unwrap()).unwrap();
+        QuicServer { endpoint, incoming }
     }
-    fn send(payload: &mut [u8]) -> Result<()> {
-
+    async fn send(&mut self, payload: Vec<u8>) -> Result<()> {
+        while let Some(conn) = self.incoming.next().await {
+            let quinn::NewConnection { mut bi_streams, .. } = conn.await?;
+            while let Some(stream) = bi_streams.next().await {
+                let stream = match stream {
+                    Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        return Err(anyhow::Error::new(e));
+                    }
+                    Ok(s) => s,
+                };
+                tokio::spawn(handle_send(stream, payload.clone()));
+                break;
+            }
+            break;
+        }
+        Ok(())
     }
-    fn recv() -> Result<std::vec::Vec<u8>> {
-
+    async fn recv(&mut self) -> Result<std::vec::Vec<u8>> {
+        let mut ret = None;
+        while let Some(conn) = self.incoming.next().await {
+            ret = Some(tokio::spawn(handle_connection(conn)).await);
+            break;
+        }
+        Ok(ret.unwrap().unwrap().unwrap())
     }
-
 }
-*/
+
 pub struct QuicListener {}
 
 impl QuicListener {
     #[allow(clippy::field_reassign_with_default)] // https://github.com/rust-lang/rust-clippy/issues/6527
-    pub async fn recv(listen: SocketAddr, path: String) -> Result<std::vec::Vec<u8>> {
+    pub async fn recv(listen: SocketAddr) -> Result<std::vec::Vec<u8>> {
         let server_config = configure_server().unwrap();
         let (_, mut incoming) = quinn::Endpoint::server(server_config, listen)?;
         let mut ret = None;
@@ -167,4 +193,17 @@ async fn handle_request((_, recv): (quinn::SendStream, quinn::RecvStream)) -> st
         .map_err(|e| anyhow!("failed reading request: {}", e))
         .unwrap();
     req
+}
+
+async fn handle_send(
+    (mut send, _): (quinn::SendStream, quinn::RecvStream),
+    payload: Vec<u8>,
+) -> Result<()> {
+    send.write_all(&payload)
+        .await
+        .map_err(|e| anyhow!("failed to send response: {}", e))?;
+    send.finish()
+        .await
+        .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
+    Ok(())
 }

@@ -5,6 +5,17 @@ use quinn::{Endpoint, Incoming, ServerConfig};
 use std::{error::Error, fs, net::SocketAddr, net::ToSocketAddrs, sync::Arc};
 use url::Url;
 
+pub struct QuicMessage {
+    pub server: QuicServer,
+    pub client: QuicClient,
+}
+
+impl QuicMessage {
+    pub fn new(client: QuicClient, server: QuicServer) -> QuicMessage {
+        QuicMessage { server, client }
+    }
+}
+
 #[async_trait]
 pub trait QuicSocket {
     fn new(addr: Option<SocketAddr>) -> Self;

@@ -18,7 +18,7 @@ impl QuicMessage {
 
 #[async_trait]
 pub trait QuicSocket {
-    fn new(addr: SocketAddr) -> Self;
+    fn new(addr: Option<SocketAddr>) -> Self;
     async fn send(&mut self, payload: Vec<u8>) -> Result<()>;
     async fn recv(&mut self) -> Result<std::vec::Vec<u8>>;
 }
@@ -30,14 +30,13 @@ pub struct QuicServer {
 
 pub struct QuicClient {
     pub endpoint: Endpoint,
-    pub addr: SocketAddr
 }
 
 #[async_trait]
 impl QuicSocket for QuicServer {
-    fn new(addr: SocketAddr) -> QuicServer {
+    fn new(addr: Option<SocketAddr>) -> QuicServer {
         let server_config = configure_server().unwrap();
-        let (endpoint, incoming) = quinn::Endpoint::server(server_config, addr).unwrap();
+        let (endpoint, incoming) = quinn::Endpoint::server(server_config, addr.unwrap()).unwrap();
         QuicServer { endpoint, incoming }
     }
     async fn send(&mut self, payload: Vec<u8>) -> Result<()> {
@@ -72,7 +71,7 @@ impl QuicSocket for QuicServer {
 
 #[async_trait]
 impl QuicSocket for QuicClient {
-    fn new(addr: SocketAddr) -> Self {
+    fn new(_addr: Option<SocketAddr>) -> Self {
         let ca = "cert.der".to_string();
         let mut roots = rustls::RootCertStore::empty();
         roots
@@ -83,9 +82,9 @@ impl QuicSocket for QuicClient {
             .with_root_certificates(roots)
             .with_no_client_auth();
         client_crypto.alpn_protocols = ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
-        let mut endpoint = quinn::Endpoint::client(addr).unwrap();
+        let mut endpoint = quinn::Endpoint::client("[::]:0".parse().unwrap()).unwrap();
         endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(client_crypto)));
-        QuicClient { endpoint, addr }
+        QuicClient { endpoint }
     }
     async fn send(&mut self, payload: Vec<u8>) -> Result<()> {
         let remote_url = Url::parse("http://127.0.0.1:4442").unwrap();

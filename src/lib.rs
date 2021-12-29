@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use quinn::{Endpoint, RecvStream, SendStream, ServerConfig};
+use quinn::{Connection, Endpoint, IncomingBiStreams, ServerConfig};
 use std::{error::Error, fs, net::SocketAddr, net::ToSocketAddrs, sync::Arc};
 use url::Url;
 
@@ -14,14 +14,14 @@ pub trait QuicSocket {
 
 pub struct QuicServer {
     pub endpoint: Endpoint,
-    pub send: SendStream,
-    pub recv: RecvStream,
+    pub connection: Connection,
+    pub bi_streams: IncomingBiStreams,
 }
 
 pub struct QuicClient {
     pub endpoint: Endpoint,
-    pub send: SendStream,
-    pub recv: RecvStream,
+    pub connection: Connection,
+    pub bi_streams: IncomingBiStreams,
 }
 
 #[async_trait]
@@ -30,32 +30,34 @@ impl QuicSocket for QuicServer {
         let server_config = configure_server().unwrap();
         let (endpoint, mut incoming) =
             quinn::Endpoint::server(server_config, addr.unwrap()).unwrap();
-        let mut send = None;
-        let mut recv = None;
-        while let Some(conn) = incoming.next().await {
-            let quinn::NewConnection { mut bi_streams, .. } = conn.await.unwrap();
-            let (ssend, srecv) = bi_streams.next().await.unwrap().unwrap();
-            send = Some(ssend);
-            recv = Some(srecv);
-            break;
-        }
+        let new_conn = incoming.next().await.unwrap().await.unwrap();
+        let quinn::NewConnection {
+            connection: conn,
+            bi_streams,
+            ..
+        } = new_conn;
         QuicServer {
             endpoint,
-            send: send.unwrap(),
-            recv: recv.unwrap(),
+            connection: conn,
+            bi_streams,
         }
     }
     async fn send(&mut self, payload: Vec<u8>) -> Result<()> {
-        self.send
-            .write_all(&payload)
+        let (mut send, _) = self
+            .connection
+            .open_bi()
+            .await
+            .map_err(|e| anyhow!("failed to open stream: {}", e))
+            .unwrap();
+        send.write_all(&payload)
             .await
             .map_err(|e| anyhow!("failed to send request: {}", e))?;
         Ok(())
     }
 
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let len = self
-            .recv
+        let (_, mut recv) = self.bi_streams.next().await.unwrap().unwrap();
+        let len = recv
             .read(buf)
             .await
             .map_err(|e| anyhow!("failed to read response: {}", e))?;
@@ -102,29 +104,31 @@ impl QuicSocket for QuicClient {
             .map_err(|e| anyhow!("failed to connect: {}", e))
             .unwrap();
         let quinn::NewConnection {
-            connection: conn, ..
+            connection: conn,
+            bi_streams,
+            ..
         } = new_conn;
-        let (send, recv) = conn
+        QuicClient {
+            endpoint,
+            connection: conn,
+            bi_streams,
+        }
+    }
+    async fn send(&mut self, payload: Vec<u8>) -> Result<()> {
+        let (mut send, _) = self
+            .connection
             .open_bi()
             .await
             .map_err(|e| anyhow!("failed to open stream: {}", e))
             .unwrap();
-        QuicClient {
-            endpoint,
-            send,
-            recv,
-        }
-    }
-    async fn send(&mut self, payload: Vec<u8>) -> Result<()> {
-        self.send
-            .write_all(&payload)
+        send.write_all(&payload)
             .await
             .map_err(|e| anyhow!("failed to send request: {}", e))?;
         Ok(())
     }
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let len = self
-            .recv
+        let (_, mut recv) = self.bi_streams.next().await.unwrap().unwrap();
+        let len = recv
             .read(buf)
             .await
             .map_err(|e| anyhow!("failed to read response: {}", e))?;

@@ -52,6 +52,9 @@ impl QuicSocket for QuicServer {
         send.write_all(&payload)
             .await
             .map_err(|e| anyhow!("failed to send request: {}", e))?;
+        send.finish()
+            .await
+            .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
         Ok(())
     }
 
@@ -124,6 +127,9 @@ impl QuicSocket for QuicClient {
         send.write_all(&payload)
             .await
             .map_err(|e| anyhow!("failed to send request: {}", e))?;
+        send.finish()
+            .await
+            .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
         Ok(())
     }
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {

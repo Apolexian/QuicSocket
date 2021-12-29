@@ -50,7 +50,6 @@ impl QuicSocket for QuicServer {
             .write_all(&payload)
             .await
             .map_err(|e| anyhow!("failed to send request: {}", e))?;
-        self.endpoint.wait_idle().await;
         Ok(())
     }
 
@@ -121,7 +120,6 @@ impl QuicSocket for QuicClient {
             .write_all(&payload)
             .await
             .map_err(|e| anyhow!("failed to send request: {}", e))?;
-        self.endpoint.wait_idle().await;
         Ok(())
     }
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {

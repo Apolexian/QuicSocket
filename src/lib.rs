@@ -1,77 +1,76 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use quinn::{Endpoint, Incoming, ServerConfig};
+use quinn::{Connection, Endpoint, IncomingBiStreams, ServerConfig};
 use std::{error::Error, fs, net::SocketAddr, net::ToSocketAddrs, sync::Arc};
 use url::Url;
 
-pub struct QuicMessage {
-    pub server: QuicServer,
-    pub client: QuicClient,
-}
-
-impl QuicMessage {
-    pub fn new(client: QuicClient, server: QuicServer) -> QuicMessage {
-        QuicMessage { server, client }
-    }
-}
-
 #[async_trait]
 pub trait QuicSocket {
-    fn new(addr: Option<SocketAddr>) -> Self;
+    async fn new(addr: Option<SocketAddr>) -> Self;
     async fn send(&mut self, payload: Vec<u8>) -> Result<()>;
-    async fn recv(&mut self) -> Result<std::vec::Vec<u8>>;
+    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize>;
 }
 
 pub struct QuicServer {
     pub endpoint: Endpoint,
-    pub incoming: Incoming,
+    pub connection: Connection,
+    pub bi_streams: IncomingBiStreams,
 }
 
 pub struct QuicClient {
     pub endpoint: Endpoint,
+    pub connection: Connection,
+    pub bi_streams: IncomingBiStreams,
 }
 
 #[async_trait]
 impl QuicSocket for QuicServer {
-    fn new(addr: Option<SocketAddr>) -> QuicServer {
+    async fn new(addr: Option<SocketAddr>) -> QuicServer {
         let server_config = configure_server().unwrap();
-        let (endpoint, incoming) = quinn::Endpoint::server(server_config, addr.unwrap()).unwrap();
-        QuicServer { endpoint, incoming }
+        let (endpoint, mut incoming) =
+            quinn::Endpoint::server(server_config, addr.unwrap()).unwrap();
+        let new_conn = incoming.next().await.unwrap().await.unwrap();
+        let quinn::NewConnection {
+            connection: conn,
+            bi_streams,
+            ..
+        } = new_conn;
+        QuicServer {
+            endpoint,
+            connection: conn,
+            bi_streams,
+        }
     }
     async fn send(&mut self, payload: Vec<u8>) -> Result<()> {
-        while let Some(conn) = self.incoming.next().await {
-            let quinn::NewConnection { mut bi_streams, .. } = conn.await?;
-            while let Some(stream) = bi_streams.next().await {
-                let stream = match stream {
-                    Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        return Err(anyhow::Error::new(e));
-                    }
-                    Ok(s) => s,
-                };
-                tokio::spawn(handle_send(stream, payload.clone()));
-                break;
-            }
-            break;
-        }
+        let (mut send, _) = self
+            .connection
+            .open_bi()
+            .await
+            .map_err(|e| anyhow!("failed to open stream: {}", e))
+            .unwrap();
+        send.write_all(&payload)
+            .await
+            .map_err(|e| anyhow!("failed to send request: {}", e))?;
+        send.finish()
+            .await
+            .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
         Ok(())
     }
-    async fn recv(&mut self) -> Result<std::vec::Vec<u8>> {
-        let mut ret = None;
-        while let Some(conn) = self.incoming.next().await {
-            ret = Some(tokio::spawn(handle_connection(conn)).await);
-            break;
-        }
-        Ok(ret.unwrap().unwrap().unwrap())
+
+    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let (_, mut recv) = self.bi_streams.next().await.unwrap().unwrap();
+        let len = recv
+            .read(buf)
+            .await
+            .map_err(|e| anyhow!("failed to read response: {}", e))?;
+        Ok(len.unwrap())
     }
 }
 
 #[async_trait]
 impl QuicSocket for QuicClient {
-    fn new(_addr: Option<SocketAddr>) -> Self {
+    async fn new(_addr: Option<SocketAddr>) -> Self {
         let ca = "cert.der".to_string();
         let mut roots = rustls::RootCertStore::empty();
         roots
@@ -84,16 +83,14 @@ impl QuicSocket for QuicClient {
         client_crypto.alpn_protocols = ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
         let mut endpoint = quinn::Endpoint::client("[::]:0".parse().unwrap()).unwrap();
         endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(client_crypto)));
-        QuicClient { endpoint }
-    }
-    async fn send(&mut self, payload: Vec<u8>) -> Result<()> {
         let remote_url = Url::parse("http://127.0.0.1:4442").unwrap();
         let host = Some("localhost".to_string());
         let remote = (
             remote_url.host_str().unwrap(),
             remote_url.port().unwrap_or(4433),
         )
-            .to_socket_addrs()?
+            .to_socket_addrs()
+            .unwrap()
             .next()
             .ok_or_else(|| anyhow!("couldn't resolve to an address"))
             .unwrap();
@@ -101,62 +98,47 @@ impl QuicSocket for QuicClient {
         let host = host
             .as_ref()
             .map_or_else(|| remote_url.host_str(), |x| Some(x))
-            .ok_or_else(|| anyhow!("no hostname specified"))?;
-        let new_conn = self
-            .endpoint
-            .connect(remote, host)?
+            .ok_or_else(|| anyhow!("no hostname specified"))
+            .unwrap();
+        let new_conn = endpoint
+            .connect(remote, host)
+            .unwrap()
             .await
-            .map_err(|e| anyhow!("failed to connect: {}", e))?;
+            .map_err(|e| anyhow!("failed to connect: {}", e))
+            .unwrap();
         let quinn::NewConnection {
-            connection: conn, ..
+            connection: conn,
+            bi_streams,
+            ..
         } = new_conn;
-        let (mut send, _) = conn
+        QuicClient {
+            endpoint,
+            connection: conn,
+            bi_streams,
+        }
+    }
+    async fn send(&mut self, payload: Vec<u8>) -> Result<()> {
+        let (mut send, _) = self
+            .connection
             .open_bi()
             .await
-            .map_err(|e| anyhow!("failed to open stream: {}", e))?;
+            .map_err(|e| anyhow!("failed to open stream: {}", e))
+            .unwrap();
         send.write_all(&payload)
             .await
             .map_err(|e| anyhow!("failed to send request: {}", e))?;
         send.finish()
             .await
             .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
-        conn.close(0u32.into(), b"done");
-        self.endpoint.wait_idle().await;
         Ok(())
     }
-    async fn recv(&mut self) -> Result<std::vec::Vec<u8>> {
-        let remote_url = Url::parse("http://127.0.0.1:4442").unwrap();
-        let host = Some("localhost".to_string());
-        let remote = (
-            remote_url.host_str().unwrap(),
-            remote_url.port().unwrap_or(4433),
-        )
-            .to_socket_addrs()?
-            .next()
-            .ok_or_else(|| anyhow!("couldn't resolve to an address"))
-            .unwrap();
-
-        let host = host
-            .as_ref()
-            .map_or_else(|| remote_url.host_str(), |x| Some(x))
-            .ok_or_else(|| anyhow!("no hostname specified"))?;
-        let new_conn = self
-            .endpoint
-            .connect(remote, host)?
-            .await
-            .map_err(|e| anyhow!("failed to connect: {}", e))?;
-        let quinn::NewConnection {
-            connection: conn, ..
-        } = new_conn;
-        let (_, recv) = conn
-            .open_bi()
-            .await
-            .map_err(|e| anyhow!("failed to open stream: {}", e))?;
-        let recv_bytes = recv
-            .read_to_end(usize::max_value())
+    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let (_, mut recv) = self.bi_streams.next().await.unwrap().unwrap();
+        let len = recv
+            .read(buf)
             .await
             .map_err(|e| anyhow!("failed to read response: {}", e))?;
-        Ok(recv_bytes)
+        Ok(len.unwrap())
     }
 }
 
@@ -198,52 +180,3 @@ pub fn gen_certificates() -> Result<(), Box<dyn Error>> {
 
 #[allow(unused)]
 pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
-
-async fn handle_connection(conn: quinn::Connecting) -> Result<std::vec::Vec<u8>> {
-    Ok(handle_spawn(conn).await.unwrap())
-}
-
-async fn handle_spawn(conn: quinn::Connecting) -> Result<std::vec::Vec<u8>> {
-    let quinn::NewConnection {
-        connection: _,
-        mut bi_streams,
-        ..
-    } = conn.await?;
-    let mut req = None;
-    while let Some(stream) = bi_streams.next().await {
-        let stream = match stream {
-            Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
-                return Ok(vec![]);
-            }
-            Err(e) => {
-                return Err(anyhow::Error::new(e));
-            }
-            Ok(s) => s,
-        };
-        req = Some(tokio::spawn(handle_request(stream)).await?);
-        break;
-    }
-    Ok(req.unwrap())
-}
-
-async fn handle_request((_, recv): (quinn::SendStream, quinn::RecvStream)) -> std::vec::Vec<u8> {
-    let req = recv
-        .read_to_end(64 * 1024)
-        .await
-        .map_err(|e| anyhow!("failed reading request: {}", e))
-        .unwrap();
-    req
-}
-
-async fn handle_send(
-    (mut send, _): (quinn::SendStream, quinn::RecvStream),
-    payload: Vec<u8>,
-) -> Result<()> {
-    send.write_all(&payload)
-        .await
-        .map_err(|e| anyhow!("failed to send response: {}", e))?;
-    send.finish()
-        .await
-        .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
-    Ok(())
-}

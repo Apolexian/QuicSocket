@@ -59,20 +59,12 @@ impl QuicSocket for QuicServer {
     }
 
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
-        while let Some(stream) = self.bi_streams.next().await {
-            let (_, mut recv) = match stream {
-                Err(_) => {
-                    return Ok(0);
-                }
-                Ok(s) => s,
-            };
-            let len = recv
-                .read(buf)
-                .await
-                .map_err(|e| anyhow!("failed to read response: {}", e))?;
-            return Ok(len.unwrap());
-        }
-        Ok(0)
+        let (_, mut recv) = self.bi_streams.next().await.unwrap().unwrap();
+        let len = recv
+            .read(buf)
+            .await
+            .map_err(|e| anyhow!("failed to read response: {}", e))?;
+        Ok(len.unwrap())
     }
 }
 
@@ -141,20 +133,12 @@ impl QuicSocket for QuicClient {
         Ok(())
     }
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
-        while let Some(stream) = self.bi_streams.next().await {
-            let (_, mut recv) = match stream {
-                Err(_) => {
-                    return Ok(0);
-                }
-                Ok(s) => s,
-            };
-            let len = recv
-                .read(buf)
-                .await
-                .map_err(|e| anyhow!("failed to read response: {}", e))?;
-            return Ok(len.unwrap());
-        }
-        Ok(0)
+        let (_, mut recv) = self.bi_streams.next().await.unwrap().unwrap();
+        let len = recv
+            .read(buf)
+            .await
+            .map_err(|e| anyhow!("failed to read response: {}", e))?;
+        Ok(len.unwrap())
     }
 }
 

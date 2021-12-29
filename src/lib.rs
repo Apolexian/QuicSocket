@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use bytes::BytesMut;
 use futures_util::StreamExt;
 use quinn::{Connection, Endpoint, IncomingBiStreams, ServerConfig};
 use std::{error::Error, fs, net::SocketAddr, net::ToSocketAddrs, sync::Arc};
@@ -9,7 +10,7 @@ use url::Url;
 pub trait QuicSocket {
     async fn new(addr: Option<SocketAddr>) -> Self;
     async fn send(&mut self, payload: Vec<u8>) -> Result<()>;
-    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize>;
+    async fn recv(&mut self, buf: BytesMut) -> Result<usize>;
 }
 
 pub struct QuicServer {
@@ -58,12 +59,14 @@ impl QuicSocket for QuicServer {
         Ok(())
     }
 
-    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
+    async fn recv(&mut self, mut bytes: BytesMut) -> Result<usize> {
+        let mut buf = [0; 200];
         let (_, mut recv) = self.bi_streams.next().await.unwrap().unwrap();
         let len = recv
-            .read(buf)
+            .read(&mut buf)
             .await
             .map_err(|e| anyhow!("failed to read response: {}", e))?;
+        bytes.extend_from_slice(&mut buf[..len.unwrap()]);
         Ok(len.unwrap())
     }
 }
@@ -132,12 +135,14 @@ impl QuicSocket for QuicClient {
             .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
         Ok(())
     }
-    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
+    async fn recv(&mut self, mut bytes: BytesMut) -> Result<usize> {
+        let mut buf = [0; 200];
         let (_, mut recv) = self.bi_streams.next().await.unwrap().unwrap();
         let len = recv
-            .read(buf)
+            .read(&mut buf)
             .await
             .map_err(|e| anyhow!("failed to read response: {}", e))?;
+        bytes.extend_from_slice(&mut buf[..len.unwrap()]);
         Ok(len.unwrap())
     }
 }

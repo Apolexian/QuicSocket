@@ -95,7 +95,7 @@ impl QuicSocket for QuicClient {
             .unwrap();
 
         let new_conn = endpoint
-            .connect(remote, "localhost")
+            .connect(remote, "ubuntu-bionic")
             .unwrap()
             .await
             .map_err(|e| anyhow!("failed to connect: {}", e))

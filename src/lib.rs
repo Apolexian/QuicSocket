@@ -83,8 +83,8 @@ impl QuicSocket for QuicClient {
         client_crypto.alpn_protocols = ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
         let mut endpoint = quinn::Endpoint::client("[::]:0".parse().unwrap()).unwrap();
         endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(client_crypto)));
-        let remote_url = Url::parse("http://127.0.0.1:4442").unwrap();
-        let host = Some("localhost".to_string());
+        let remote_url = Url::parse("http://10.0.0.6:4442").unwrap();
+        let host = Some("10.0.0.6".to_string());
         let remote = (
             remote_url.host_str().unwrap(),
             remote_url.port().unwrap_or(4433),

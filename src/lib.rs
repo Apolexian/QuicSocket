@@ -84,7 +84,6 @@ impl QuicSocket for QuicClient {
         let mut endpoint = quinn::Endpoint::client("[::]:0".parse().unwrap()).unwrap();
         endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(client_crypto)));
         let remote_url = Url::parse("http://10.0.0.6:4442").unwrap();
-        let host = Some(remote_url.host_str().unwrap());
         let remote = (
             remote_url.host_str().unwrap(),
             remote_url.port().unwrap_or(4433),
@@ -95,13 +94,8 @@ impl QuicSocket for QuicClient {
             .ok_or_else(|| anyhow!("couldn't resolve to an address"))
             .unwrap();
 
-        let host = host
-            .as_ref()
-            .map_or_else(|| remote_url.host_str(), |x| Some(x))
-            .ok_or_else(|| anyhow!("no hostname specified"))
-            .unwrap();
         let new_conn = endpoint
-            .connect(remote, host)
+            .connect(remote, "localhost")
             .unwrap()
             .await
             .map_err(|e| anyhow!("failed to connect: {}", e))

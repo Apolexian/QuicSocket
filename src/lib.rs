@@ -7,7 +7,11 @@ use url::Url;
 
 #[async_trait]
 pub trait QuicSocket {
-    async fn new(addr: Option<SocketAddr>) -> Self;
+    async fn new(
+        addr: Option<SocketAddr>,
+        remote_url: Option<String>,
+        host: Option<String>,
+    ) -> Self;
     async fn send(&mut self, payload: Vec<u8>) -> Result<()>;
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize>;
 }
@@ -26,7 +30,11 @@ pub struct QuicClient {
 
 #[async_trait]
 impl QuicSocket for QuicServer {
-    async fn new(addr: Option<SocketAddr>) -> QuicServer {
+    async fn new(
+        addr: Option<SocketAddr>,
+        _remote_url: Option<String>,
+        _host: Option<String>,
+    ) -> QuicServer {
         let server_config = configure_server().unwrap();
         let (endpoint, mut incoming) =
             quinn::Endpoint::server(server_config, addr.unwrap()).unwrap();
@@ -70,7 +78,11 @@ impl QuicSocket for QuicServer {
 
 #[async_trait]
 impl QuicSocket for QuicClient {
-    async fn new(_addr: Option<SocketAddr>) -> Self {
+    async fn new(
+        _addr: Option<SocketAddr>,
+        remote_url: Option<String>,
+        host: Option<String>,
+    ) -> Self {
         let ca = "cert.der".to_string();
         let mut roots = rustls::RootCertStore::empty();
         roots
@@ -83,7 +95,7 @@ impl QuicSocket for QuicClient {
         client_crypto.alpn_protocols = ALPN_QUIC_HTTP.iter().map(|&x| x.into()).collect();
         let mut endpoint = quinn::Endpoint::client("[::]:0".parse().unwrap()).unwrap();
         endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(client_crypto)));
-        let remote_url = Url::parse("http://10.0.0.6:4442").unwrap();
+        let remote_url = Url::parse(&remote_url.unwrap()).unwrap();
         let remote = (
             remote_url.host_str().unwrap(),
             remote_url.port().unwrap_or(4433),
@@ -95,7 +107,7 @@ impl QuicSocket for QuicClient {
             .unwrap();
 
         let new_conn = endpoint
-            .connect(remote, "ubuntu-bionic")
+            .connect(remote, &host.unwrap())
             .unwrap()
             .await
             .map_err(|e| anyhow!("failed to connect: {}", e))

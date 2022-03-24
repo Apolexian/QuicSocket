@@ -1,6 +1,6 @@
 [package]
 name = "quic-socket"
-version = "0.7.6"
+version = "0.7.7"
 edition = "2021"
 authors = ["Ivan Nikitin <ivan@niktivan.org>"]
 description = "Socket-esc wrapper on the quiche QUIC implementation"
